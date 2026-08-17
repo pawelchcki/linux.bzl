@@ -172,10 +172,10 @@ func (r *KbuildGeneratedSourceResolver) ForObject(object string) (KbuildGenerate
 	if len(candidates) == 0 {
 		return KbuildGeneratedSource{}, false, nil
 	}
-	// Compiled sources only. The extension order mirrors sourceForObject's, so
-	// an object that could plausibly come from either never resolves
-	// differently here than it would on disk.
-	for _, ext := range []string{".S", ".c", ".s"} {
+	// Compiled sources only, sharing sourceForObject's candidate order so an
+	// object that could plausibly come from either never resolves differently
+	// here than it would on disk.
+	for _, ext := range compiledSourceExtensions {
 		target := stem + ext
 		match, found, err := r.selectRule(target, candidates)
 		if err != nil {

@@ -2921,6 +2921,16 @@ func compactGeneratedSourceForObject(
 	return &resolved, &executor, nil
 }
 
+// compiledSourceExtensions are the compiled-source extensions tried for a leaf
+// object, in the order GNU make resolves them.
+//
+// scripts/Makefile.build defines "$(obj)/%.o: $(obj)/%.c" before
+// "$(obj)/%.o: $(obj)/%.S", and make tries pattern rules in definition order,
+// so a stem that could come from either resolves to the C source. Both the
+// on-disk probe below and the Kbuild rule resolver iterate this one list, so
+// they cannot disagree about which candidate wins.
+var compiledSourceExtensions = []string{".c", ".S", ".s"}
+
 func sourceForObject(sourceRoot, objectDir, object string, sourceRoots map[string]string) string {
 	if !strings.HasSuffix(object, ".o") {
 		return ""
@@ -2935,7 +2945,7 @@ func sourceForObject(sourceRoot, objectDir, object string, sourceRoots map[strin
 		}
 	}
 	stem := strings.TrimSuffix(object, ".o")
-	for _, ext := range []string{".c", ".S", ".s"} {
+	for _, ext := range compiledSourceExtensions {
 		candidate := filepath.ToSlash(filepath.Join(objectDir, stem+ext))
 		if sourceRoot != "" && fileExists(filepath.Join(sourceRoot, filepath.FromSlash(candidate))) {
 			return candidate
@@ -2951,27 +2961,27 @@ func sourceCandidatesForObject(object string) []string {
 	stem := strings.TrimSuffix(object, ".o")
 	var out []string
 	if base, ok := strings.CutSuffix(stem, ".pi"); ok {
-		for _, ext := range []string{".c", ".S", ".s"} {
+		for _, ext := range compiledSourceExtensions {
 			out = append(out, base+ext)
 		}
 		if dir, file := filepath.Split(base); strings.HasPrefix(file, "lib-") {
-			for _, ext := range []string{".c", ".S", ".s"} {
+			for _, ext := range compiledSourceExtensions {
 				out = append(out, filepath.ToSlash(filepath.Join("lib", strings.TrimPrefix(file, "lib-")+ext)))
 				out = append(out, filepath.ToSlash(filepath.Join(dir, strings.TrimPrefix(file, "lib-")+ext)))
 			}
 		}
 	}
 	if base, ok := strings.CutSuffix(stem, ".nvhe"); ok {
-		for _, ext := range []string{".c", ".S", ".s"} {
+		for _, ext := range compiledSourceExtensions {
 			out = append(out, base+ext)
 		}
 	}
 	if base, ok := strings.CutSuffix(stem, ".stub"); ok {
-		for _, ext := range []string{".c", ".S", ".s"} {
+		for _, ext := range compiledSourceExtensions {
 			out = append(out, base+ext)
 		}
 		if dir, file := filepath.Split(base); strings.HasPrefix(file, "lib-") {
-			for _, ext := range []string{".c", ".S", ".s"} {
+			for _, ext := range compiledSourceExtensions {
 				out = append(out, filepath.ToSlash(filepath.Join("lib", strings.TrimPrefix(file, "lib-")+ext)))
 				out = append(out, filepath.ToSlash(filepath.Join(dir, strings.TrimPrefix(file, "lib-")+ext)))
 			}
@@ -3019,7 +3029,7 @@ func sourceCandidatesForObject(object string) []string {
 		out = append(out, "lib/crypto/x86/poly1305-x86_64-cryptogams.pl")
 	}
 	if dir, file := filepath.Split(stem); strings.HasPrefix(file, "lib-") {
-		for _, ext := range []string{".c", ".S", ".s"} {
+		for _, ext := range compiledSourceExtensions {
 			out = append(out, filepath.ToSlash(filepath.Join("lib", strings.TrimPrefix(file, "lib-")+ext)))
 			out = append(out, filepath.ToSlash(filepath.Join(dir, strings.TrimPrefix(file, "lib-")+ext)))
 		}

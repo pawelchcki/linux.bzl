@@ -361,6 +361,52 @@ $(obj)/aesp10-ppc.S $(obj)/ghashp10-ppc.S: $(obj)/%.S: $(src)/%.pl FORCE
 	})
 }
 
+// TestGeneratedSourceForObjectPrefersCSourceOverAssembly pins the candidate
+// order when one stem can be produced by rules for two compiled extensions.
+//
+// scripts/Makefile.build defines "$(obj)/%.o: $(obj)/%.c" before
+// "$(obj)/%.o: $(obj)/%.S", and make tries pattern rules in definition order,
+// so the C source wins. The on-disk probe in sourceForObject resolves the same
+// way, and the two must agree or an object's source depends on which path
+// happened to answer.
+func TestGeneratedSourceForObjectPrefersCSourceOverAssembly(t *testing.T) {
+	got, ok, err := generatedSourceForTest(t, "", map[string]string{
+		"Makefile": rootMakefileDescending("lib/demo"),
+		"lib/demo/Makefile": `obj-y += both.o
+
+quiet_cmd_gencsource = GENC    $@
+      cmd_gencsource = $(PERL) $< > $@
+quiet_cmd_genasm = GENASM  $@
+      cmd_genasm = $(PERL) $< > $@
+
+$(obj)/%.S: $(src)/%.pl FORCE
+	$(call if_changed,genasm)
+$(obj)/%.c: $(src)/%.tmpl FORCE
+	$(call if_changed,gencsource)
+`,
+		"lib/demo/both.pl":   "# perlasm\n",
+		"lib/demo/both.tmpl": "/* template */\n",
+	}, "lib/demo/both.o")
+	if err != nil {
+		t.Fatalf("ForObject() failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("ForObject() found no generated source")
+	}
+	// The ".S" rule is written first in the Makefile and would win on a
+	// first-rule-seen scan; the candidate extension order is what makes ".c"
+	// the answer.
+	assertGeneratedSource(t, got, KbuildGeneratedSource{
+		Target:          "lib/demo/both.c",
+		Stem:            "both",
+		Primary:         "lib/demo/both.tmpl",
+		Prerequisites:   []string{"lib/demo/both.tmpl"},
+		CommandTemplate: "$(PERL) $< > $@",
+		CommandName:     "gencsource",
+		Directory:       "lib/demo",
+	})
+}
+
 // TestGeneratedSourceForObjectIgnoresUnmatchedObjects pins that a
 // directory-wide "%.S: %.pl" rule does not claim every object in the
 // directory: a pattern rule only applies when its prerequisites exist.
