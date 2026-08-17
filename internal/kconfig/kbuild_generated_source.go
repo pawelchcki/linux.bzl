@@ -67,9 +67,14 @@ type KbuildGeneratedSource struct {
 	Prerequisites []string
 	OrderOnly     []string
 	// Command is the resolved "cmd_<name>" macro body with the stem
-	// substituted. Automatic variables survive expansion, so this still shows
-	// which argument is the input and which is the output.
+	// substituted, for diagnostics. Automatic variables survive expansion, so
+	// this still shows which argument is the input and which is the output.
 	Command string
+	// CommandTemplate is the same body with the stem left as "$*". Generator
+	// classification keys on this rather than on Command: the template is the
+	// same text in every kernel version and for every stem, whereas Command
+	// differs per object.
+	CommandTemplate string
 	// CommandName is the "<name>" of that macro, for diagnostics only.
 	// Generators are classified by command text, never by this name: 6.12
 	// spells the same generator "perlasm" on x86 and "perl" on arm.
@@ -388,6 +393,7 @@ func (r *KbuildGeneratedSourceResolver) buildGeneratedSource(object, target stri
 	// them absolute would make the command text depend on where the tree was
 	// unpacked, which would leak a build-machine path into every content ID
 	// derived from it.
+	generated.CommandTemplate = r.sourceRelativeCommand(command.Value)
 	generated.Command = r.sourceRelativeCommand(substituteMakeStem(command.Value, match.stem))
 
 	// Detecting a reference that expanded to nothing needs the raw text: a

@@ -59,13 +59,14 @@ $(obj)/%.S: $(src)/%.pl FORCE
 		t.Fatalf("ForObject() found no generated source")
 	}
 	assertGeneratedSource(t, got, KbuildGeneratedSource{
-		Target:        "arch/x86/crypto/poly1305-x86_64-cryptogams.S",
-		Stem:          "poly1305-x86_64-cryptogams",
-		Primary:       "arch/x86/crypto/poly1305-x86_64-cryptogams.pl",
-		Prerequisites: []string{"arch/x86/crypto/poly1305-x86_64-cryptogams.pl"},
-		Command:       "$(PERL) $< > $@",
-		CommandName:   "perlasm",
-		Directory:     "arch/x86/crypto",
+		Target:          "arch/x86/crypto/poly1305-x86_64-cryptogams.S",
+		Stem:            "poly1305-x86_64-cryptogams",
+		Primary:         "arch/x86/crypto/poly1305-x86_64-cryptogams.pl",
+		Prerequisites:   []string{"arch/x86/crypto/poly1305-x86_64-cryptogams.pl"},
+		Command:         "$(PERL) $< > $@",
+		CommandTemplate: "$(PERL) $< > $@",
+		CommandName:     "perlasm",
+		Directory:       "arch/x86/crypto",
 	})
 }
 
@@ -103,25 +104,27 @@ $(obj)/tables.c: $(obj)/mktables FORCE
 		{
 			object: "lib/raid6/int1.o",
 			want: KbuildGeneratedSource{
-				Target:        "lib/raid6/int1.c",
-				Stem:          "1",
-				Primary:       "lib/raid6/int.uc",
-				Prerequisites: []string{"lib/raid6/int.uc", "lib/raid6/unroll.awk"},
-				Command:       "$(AWK) -v N=1 -f lib/raid6/unroll.awk < $< > $@",
-				CommandName:   "unroll",
-				Directory:     "lib/raid6",
+				Target:          "lib/raid6/int1.c",
+				Stem:            "1",
+				Primary:         "lib/raid6/int.uc",
+				Prerequisites:   []string{"lib/raid6/int.uc", "lib/raid6/unroll.awk"},
+				Command:         "$(AWK) -v N=1 -f lib/raid6/unroll.awk < $< > $@",
+				CommandTemplate: "$(AWK) -v N=$* -f lib/raid6/unroll.awk < $< > $@",
+				CommandName:     "unroll",
+				Directory:       "lib/raid6",
 			},
 		},
 		{
 			object: "lib/raid6/int8.o",
 			want: KbuildGeneratedSource{
-				Target:        "lib/raid6/int8.c",
-				Stem:          "8",
-				Primary:       "lib/raid6/int.uc",
-				Prerequisites: []string{"lib/raid6/int.uc", "lib/raid6/unroll.awk"},
-				Command:       "$(AWK) -v N=8 -f lib/raid6/unroll.awk < $< > $@",
-				CommandName:   "unroll",
-				Directory:     "lib/raid6",
+				Target:          "lib/raid6/int8.c",
+				Stem:            "8",
+				Primary:         "lib/raid6/int.uc",
+				Prerequisites:   []string{"lib/raid6/int.uc", "lib/raid6/unroll.awk"},
+				Command:         "$(AWK) -v N=8 -f lib/raid6/unroll.awk < $< > $@",
+				CommandTemplate: "$(AWK) -v N=$* -f lib/raid6/unroll.awk < $< > $@",
+				CommandName:     "unroll",
+				Directory:       "lib/raid6",
 			},
 		},
 		{
@@ -130,13 +133,14 @@ $(obj)/tables.c: $(obj)/mktables FORCE
 			// rules deliberately skip the prerequisite-existence test.
 			object: "lib/raid6/tables.o",
 			want: KbuildGeneratedSource{
-				Target:        "lib/raid6/tables.c",
-				Primary:       "lib/raid6/mktables",
-				Prerequisites: []string{"lib/raid6/mktables"},
-				Command:       "lib/raid6/mktables > $@",
-				CommandName:   "mktable",
-				Explicit:      true,
-				Directory:     "lib/raid6",
+				Target:          "lib/raid6/tables.c",
+				Primary:         "lib/raid6/mktables",
+				Prerequisites:   []string{"lib/raid6/mktables"},
+				Command:         "lib/raid6/mktables > $@",
+				CommandTemplate: "lib/raid6/mktables > $@",
+				CommandName:     "mktable",
+				Explicit:        true,
+				Directory:       "lib/raid6",
 			},
 		},
 	} {
@@ -185,37 +189,40 @@ $(obj)/sha256-core.S: $(src)/sha512-armv8.pl
 		{
 			object: "arch/arm64/crypto/sha256-core.o",
 			want: KbuildGeneratedSource{
-				Target:        "arch/arm64/crypto/sha256-core.S",
-				Primary:       "arch/arm64/crypto/sha512-armv8.pl",
-				Prerequisites: []string{"arch/arm64/crypto/sha512-armv8.pl"},
-				Command:       "$(PERL) $(<) void $(@)",
-				CommandName:   "perlasm",
-				Explicit:      true,
-				Directory:     "arch/arm64/crypto",
+				Target:          "arch/arm64/crypto/sha256-core.S",
+				Primary:         "arch/arm64/crypto/sha512-armv8.pl",
+				Prerequisites:   []string{"arch/arm64/crypto/sha512-armv8.pl"},
+				Command:         "$(PERL) $(<) void $(@)",
+				CommandTemplate: "$(PERL) $(<) void $(@)",
+				CommandName:     "perlasm",
+				Explicit:        true,
+				Directory:       "arch/arm64/crypto",
 			},
 		},
 		{
 			object: "arch/arm64/crypto/sha512-core.o",
 			want: KbuildGeneratedSource{
-				Target:        "arch/arm64/crypto/sha512-core.S",
-				Stem:          "sha512",
-				Primary:       "arch/arm64/crypto/sha512-armv8.pl",
-				Prerequisites: []string{"arch/arm64/crypto/sha512-armv8.pl"},
-				Command:       "$(PERL) $(<) void $(@)",
-				CommandName:   "perlasm",
-				Directory:     "arch/arm64/crypto",
+				Target:          "arch/arm64/crypto/sha512-core.S",
+				Stem:            "sha512",
+				Primary:         "arch/arm64/crypto/sha512-armv8.pl",
+				Prerequisites:   []string{"arch/arm64/crypto/sha512-armv8.pl"},
+				Command:         "$(PERL) $(<) void $(@)",
+				CommandTemplate: "$(PERL) $(<) void $(@)",
+				CommandName:     "perlasm",
+				Directory:       "arch/arm64/crypto",
 			},
 		},
 		{
 			object: "arch/arm64/crypto/poly1305-core.o",
 			want: KbuildGeneratedSource{
-				Target:        "arch/arm64/crypto/poly1305-core.S",
-				Stem:          "poly1305",
-				Primary:       "arch/arm64/crypto/poly1305-armv8.pl",
-				Prerequisites: []string{"arch/arm64/crypto/poly1305-armv8.pl"},
-				Command:       "$(PERL) $(<) void $(@)",
-				CommandName:   "perlasm",
-				Directory:     "arch/arm64/crypto",
+				Target:          "arch/arm64/crypto/poly1305-core.S",
+				Stem:            "poly1305",
+				Primary:         "arch/arm64/crypto/poly1305-armv8.pl",
+				Prerequisites:   []string{"arch/arm64/crypto/poly1305-armv8.pl"},
+				Command:         "$(PERL) $(<) void $(@)",
+				CommandTemplate: "$(PERL) $(<) void $(@)",
+				CommandName:     "perlasm",
+				Directory:       "arch/arm64/crypto",
 			},
 		},
 	} {
@@ -268,10 +275,11 @@ targets += capflags.c
 			"arch/x86/include/asm/vmxfeatures.h",
 			"arch/x86/kernel/cpu/mkcapflags.sh",
 		},
-		Command:     "$(CONFIG_SHELL) arch/x86/kernel/cpu/mkcapflags.sh $@ $^",
-		CommandName: "mkcapflags",
-		Explicit:    true,
-		Directory:   "arch/x86/kernel/cpu",
+		Command:         "$(CONFIG_SHELL) arch/x86/kernel/cpu/mkcapflags.sh $@ $^",
+		CommandTemplate: "$(CONFIG_SHELL) arch/x86/kernel/cpu/mkcapflags.sh $@ $^",
+		CommandName:     "mkcapflags",
+		Explicit:        true,
+		Directory:       "arch/x86/kernel/cpu",
 	})
 }
 
@@ -310,13 +318,14 @@ $(obj)/defkeymap.o:  $(obj)/defkeymap.c
 		t.Fatalf("ForObject() found no generated source")
 	}
 	assertGeneratedSource(t, got, KbuildGeneratedSource{
-		Target:        "drivers/tty/vt/consolemap_deftbl.c",
-		Primary:       "drivers/tty/vt/cp437.uni",
-		Prerequisites: []string{"drivers/tty/vt/cp437.uni", "drivers/tty/vt/conmakehash"},
-		Command:       "drivers/tty/vt/conmakehash $< > $@",
-		CommandName:   "conmk",
-		Explicit:      true,
-		Directory:     "drivers/tty/vt",
+		Target:          "drivers/tty/vt/consolemap_deftbl.c",
+		Primary:         "drivers/tty/vt/cp437.uni",
+		Prerequisites:   []string{"drivers/tty/vt/cp437.uni", "drivers/tty/vt/conmakehash"},
+		Command:         "drivers/tty/vt/conmakehash $< > $@",
+		CommandTemplate: "drivers/tty/vt/conmakehash $< > $@",
+		CommandName:     "conmk",
+		Explicit:        true,
+		Directory:       "drivers/tty/vt",
 	})
 
 	// The recipe-less rule must not claim defkeymap.o.
@@ -351,13 +360,14 @@ $(obj)/aesp10-ppc.S $(obj)/ghashp10-ppc.S: $(obj)/%.S: $(src)/%.pl FORCE
 		t.Fatalf("ForObject() found no generated source")
 	}
 	assertGeneratedSource(t, got, KbuildGeneratedSource{
-		Target:        "arch/powerpc/crypto/aesp10-ppc.S",
-		Stem:          "aesp10-ppc",
-		Primary:       "arch/powerpc/crypto/aesp10-ppc.pl",
-		Prerequisites: []string{"arch/powerpc/crypto/aesp10-ppc.pl"},
-		Command:       "$(PERL) $< > $@",
-		CommandName:   "perl",
-		Directory:     "arch/powerpc/crypto",
+		Target:          "arch/powerpc/crypto/aesp10-ppc.S",
+		Stem:            "aesp10-ppc",
+		Primary:         "arch/powerpc/crypto/aesp10-ppc.pl",
+		Prerequisites:   []string{"arch/powerpc/crypto/aesp10-ppc.pl"},
+		Command:         "$(PERL) $< > $@",
+		CommandTemplate: "$(PERL) $< > $@",
+		CommandName:     "perl",
+		Directory:       "arch/powerpc/crypto",
 	})
 }
 
