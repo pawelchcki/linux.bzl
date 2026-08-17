@@ -3428,7 +3428,7 @@ func (p *kbuildParser) evalMakeFunction(name string, args []string, original str
 		if len(args) != 1 {
 			return original
 		}
-		return strings.Join(strings.Fields(args[0]), " ")
+		return collapseMakeWhitespace(args[0])
 	case "suffix":
 		if len(args) != 1 {
 			return original

@@ -806,16 +806,11 @@ def _is_assembly_path(path):
 
 # _linux_legacy_perlasm_kind maps an object path to a perlasm flavour.
 #
-# Superseded by the "generator" attribute, which carries the flavour derived
-# from the Kbuild rule's own cmd_* text instead of being transcribed here. It
-# is retained because the graph generator is a pinned prebuilt: until the pin
-# is bumped, the generated BUILD files still carry no generator attribute, and
-# deleting this would leave the tree unbuildable in between.
-#
-# Note that these entries describe the post-6.16 lib/crypto layout only, and
-# that the arm64 sha256-core row is wrong for 6.12, whose Makefile carries an
-# explicit rule overriding the pattern rule. Both are reasons the rule-derived
-# path replaces it rather than extending it.
+# Superseded by the "generator" attribute, which derives the flavour from the
+# rule's own cmd_* text. Retained only because the graph generator is a pinned
+# prebuilt: until the pin is bumped the generated BUILD files carry no
+# generator attribute. These rows describe the post-6.16 lib/crypto layout
+# only, and the arm64 sha256-core row is wrong for 6.12.
 _LINUX_LEGACY_PERLASM_KINDS = {
     "lib/crypto/arm/poly1305-core.o": "stdout",
     "lib/crypto/arm/sha256-core.o": "stdout",
@@ -5954,15 +5949,11 @@ def _linux_perl_runtime(ctx):
     )
 
 # _linux_generated_source runs the Kbuild rule that produces this object's
-# source, when the graph generator resolved one.
+# source, when the graph generator resolved one, and returns None otherwise.
 #
-# The generator kind, its arguments and its inputs are all derived from the
-# Kbuild rule by the graph generator, rather than being keyed off the object
-# path here. What stays hardcoded is the executor: no action has an awk, shell
-# or coreutils toolchain, so every kind maps to a Go port or to Perl.
-#
-# Returns None when the object has no generated source, so callers keep their
-# existing behaviour unchanged.
+# The kind, arguments and inputs are all derived from the Kbuild rule. Only the
+# executor stays hardcoded: no action has an awk, shell or coreutils
+# toolchain, so every kind maps to a Go port or to Perl.
 def _linux_generated_source(ctx):
     generator = ctx.attr.generator
     if not generator:
@@ -5975,13 +5966,13 @@ def _linux_generated_source(ctx):
     # name with an assumed extension: raid6 generates ".c", perlasm ".S".
     out = ctx.actions.declare_file(ctx.label.name + ".obj/" + generated_path)
     inputs = [
-        _linux_source_input_file_for_path(ctx, relpath)
+        _source_tree_file(ctx, relpath)
         for relpath in ctx.attr.generator_inputs
     ]
     args = ctx.actions.args()
 
-    # Each branch only decides what to run and what it opens; the action
-    # wiring itself is identical for every kind and is written once below.
+    # generator_inputs is already exactly what the executor opens, per kind.
+    # Only the perl branches override this, to add the interpreter runtime.
     action_inputs = depset(inputs)
 
     if generator in ["perl_stdout", "perl_arg_out"]:
@@ -6001,10 +5992,9 @@ def _linux_generated_source(ctx):
             args.add(out)
             executable = perl_runtime.interpreter
         else:
-            # The script writes to stdout, which runandwrite redirects. It
-            # deliberately runs with an empty environment, so a script that
-            # tried to reach an undeclared file would fail rather than
-            # silently succeed.
+            # The script writes to stdout, which runandwrite redirects with a
+            # deliberately empty environment, so a script reaching for an
+            # undeclared file fails rather than silently succeeding.
             args.add(out)
             args.add(perl_runtime.interpreter)
             args.add(script)
@@ -6017,15 +6007,13 @@ def _linux_generated_source(ctx):
         args.add("-in", inputs[0])
         args.add("-out", out)
         executable = ctx.executable._unroll
-        action_inputs = depset([inputs[0]])
         mnemonic = "LinuxRaid6Unroll"
         message = "Generating Linux RAID6 unrolled source %{label}"
     elif generator == "raid6_mktables":
         # The generator reads nothing: it writes the tables from compiled-in
-        # arithmetic, so it declares no action inputs.
+        # arithmetic, and the graph generator declares no inputs for it.
         args.add("-out", out)
         executable = ctx.executable._raid6tables
-        action_inputs = depset()
         mnemonic = "LinuxRaid6Tables"
         message = "Generating Linux RAID6 tables %{label}"
     elif generator == "mkcapflags":
@@ -6046,7 +6034,6 @@ def _linux_generated_source(ctx):
         args.add("-in", inputs[0])
         args.add("-out", out)
         executable = ctx.executable._conmakehash
-        action_inputs = depset([inputs[0]])
         mnemonic = "LinuxConsoleMap"
         message = "Generating Linux console map %{label}"
     else:
@@ -6334,6 +6321,10 @@ def _linux_object_impl(ctx):
         generated_sources.append(_source_tree_file(ctx, "scripts/dtc/libfdt/" + source_relpath.rsplit("/", 1)[-1]))
     if ctx.attr.object == "init/version.o":
         generated_sources.append(_source_tree_file(ctx, "init/version-timestamp.c"))
+    # The two "rule_generated == None" blocks below duplicate the mkcapflags
+    # and conmakehash branches of _linux_generated_source, as
+    # _LINUX_LEGACY_PERLASM_KINDS duplicates its perl branches. Change both
+    # copies together; all three go when the generator pin is bumped.
     if rule_generated == None and ctx.attr.object == "arch/x86/kernel/cpu/capflags.o":
         generated = ctx.actions.declare_file(ctx.label.name + ".obj/arch/x86/kernel/cpu/capflags.c")
         cap_args = ctx.actions.args()

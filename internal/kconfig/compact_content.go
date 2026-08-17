@@ -263,6 +263,31 @@ type compactGeneratorIdentity struct {
 	Inputs []string
 }
 
+// compactGeneratorIdentityFor derives the identity from a resolved executor;
+// a nil executor is a checked-in source and hashes as no generator.
+func compactGeneratorIdentityFor(executor *GeneratedSourceExecutor) compactGeneratorIdentity {
+	if executor == nil {
+		return compactGeneratorIdentity{}
+	}
+	return compactGeneratorIdentity{
+		Source: executor.Target,
+		Kind:   string(executor.Kind),
+		Args:   append([]string(nil), executor.Args...),
+		Inputs: append([]string(nil), executor.ActionInputs...),
+	}
+}
+
+// generatorIdentity recovers the identity from an emitted variant, so a
+// re-derived content ID cannot disagree with the one that produced it.
+func (v CompactObjectVariant) generatorIdentity() compactGeneratorIdentity {
+	return compactGeneratorIdentity{
+		Source: v.GeneratedSource,
+		Kind:   v.Generator,
+		Args:   v.GeneratorArgs,
+		Inputs: v.GeneratorInputs,
+	}
+}
+
 // write appends the generator fields to a content hash.
 //
 // Both the concrete recipe ID and the object content ID cover these fields,
@@ -1028,12 +1053,7 @@ func (metadata *CompactMetadata) validateContentIDs() error {
 			variant.Symversions,
 			variant.SymversionFlags,
 			variant.SymversionRemoveFlags,
-			compactGeneratorIdentity{
-				Source: variant.GeneratedSource,
-				Kind:   variant.Generator,
-				Args:   variant.GeneratorArgs,
-				Inputs: variant.GeneratorInputs,
-			},
+			variant.generatorIdentity(),
 		)
 		if variant.ContentID != expected {
 			return fmt.Errorf("object target %q canonical fields hash to %s, got %s", variant.Target, expected, variant.ContentID)

@@ -1429,11 +1429,16 @@ def _content_graph_metadata_structure_error(metadata):
                 return error
     return ""
 
+# Frozen top-level list shared by every generator-less variant, which is
+# almost all of them.
+_NO_GENERATOR = []
+
 def _action_recipe_key(variant):
     # The compiled language is the generated target's when there is one: a
     # perlasm object's source is a ".pl" script but it compiles ".S", and a
     # raid6 object's source is a ".uc" template but it compiles ".c".
-    source = variant.get("generated_source", "") or variant.get("source", "")
+    generated_source = variant.get("generated_source", "")
+    source = generated_source or variant.get("source", "")
     language = ""
     if source.endswith(".c"):
         language = "c"
@@ -1442,15 +1447,16 @@ def _action_recipe_key(variant):
     kind = "compile"
     if variant.get("members", []):
         kind = "arm64_nvhe" if variant.get("object", "") == "arch/arm64/kvm/hyp/nvhe/kvm_nvhe.o" else "composite"
-    generated = []
-    if variant.get("generator", ""):
+    generator = variant.get("generator", "")
+    generated = _NO_GENERATOR
+    if generator:
         # Required for correctness, not just completeness: arm64's
         # sha256-core.o and sha512-core.o share a source, flags and arguments,
         # and differ only in which target they generate. Without this they
         # would be grouped into one action.
         generated = [
-            variant.get("generated_source", ""),
-            variant.get("generator", ""),
+            generated_source,
+            generator,
             variant.get("generator_args", []),
             variant.get("generator_inputs", []),
         ]

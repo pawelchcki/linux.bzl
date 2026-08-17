@@ -1,7 +1,6 @@
 package kconfig
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,15 +15,16 @@ import (
 // the condition under test: with it, lib/raid6/int1.o silently acquires an
 // int1.c and the bug never fires.
 
-// generatedSourceMetadata builds a synthetic tree on disk, parses it the way
-// the real tool does, and resolves compact metadata for one config.
-func generatedSourceMetadata(
+// generatedSourceMetadataResult builds a synthetic tree on disk, parses it the
+// way the real tool does, and resolves compact metadata for one config. It
+// returns the batch error so the failure tests can share this setup.
+func generatedSourceMetadataResult(
 	t *testing.T,
 	kconfigText string,
 	files map[string]string,
 	srcarch string,
 	flags map[string]string,
-) (*CompactMetadata, *CompactConfig, string) {
+) (*CompactMetadata, string, error) {
 	t.Helper()
 	tree := mustParseString(t, kconfigText)
 	root := t.TempDir()
@@ -48,6 +48,18 @@ func generatedSourceMetadata(
 			return CompactConfigGraph{Kbuild: kb, GeneratedHeadersLabel: "//headers:test"}, nil
 		},
 	)
+	return metadata, root, err
+}
+
+func generatedSourceMetadata(
+	t *testing.T,
+	kconfigText string,
+	files map[string]string,
+	srcarch string,
+	flags map[string]string,
+) (*CompactMetadata, *CompactConfig, string) {
+	t.Helper()
+	metadata, root, err := generatedSourceMetadataResult(t, kconfigText, files, srcarch, flags)
 	if err != nil {
 		t.Fatalf("CompactMetadataBatchWithOptions() failed: %v", err)
 	}
@@ -223,7 +235,7 @@ $(obj)/%.S: $(src)/%.pl FORCE
 		t.Errorf("generator_args = %v, want none", variant.GeneratorArgs)
 	}
 	// The generated target is assembly even though the source is a ".pl".
-	if got := compactSourceLanguage(compactCompiledSourcePath(variant)); got != "asm" {
+	if got := compactSourceLanguage(compactCompiledSourcePath(variant.Source, variant.GeneratedSource)); got != "asm" {
 		t.Errorf("compiled language = %q, want asm", got)
 	}
 }
@@ -294,9 +306,7 @@ $(obj)/sha256-core.S: $(src)/sha512-armv8.pl
 // "cannot resolve a source" error. This is the shape 6.18 uses for mips and
 // riscv poly1305, whose scripts spawn an "*-xlate.pl" child.
 func TestCompactMetadataReportsUnimplementedGenerator(t *testing.T) {
-	tree := mustParseString(t, "mainmenu \"unsupported generator\"\n")
-	root := t.TempDir()
-	for name, contents := range map[string]string{
+	_, _, err := generatedSourceMetadataResult(t, "mainmenu \"unsupported generator\"\n", map[string]string{
 		"Makefile": "obj-y += lib/crypto/\n",
 		"lib/crypto/Makefile": `obj-y += poly1305-core.o
 
@@ -306,26 +316,7 @@ $(obj)/poly1305-core.S: $(src)/poly1305-riscv.pl FORCE
 	$(call if_changed,perlasm_poly1305)
 `,
 		"lib/crypto/poly1305-riscv.pl": "# perlasm\n",
-	} {
-		mustWriteSource(t, root, name, contents)
-	}
-	writeCompactContentGraphForcedInputs(t, root)
-
-	kb, err := ParseKbuildDirectoryTree(filepath.Join(root, "Makefile"), KbuildOptions{RootDir: root})
-	if err != nil {
-		t.Fatalf("ParseKbuildDirectoryTree() failed: %v", err)
-	}
-	_, err = tree.CompactMetadataBatchWithOptions(
-		[]NamedConfig{{Name: "test"}},
-		CompactMetadataOptions{
-			SourceRoot:            root,
-			Srcarch:               "riscv",
-			CompileEnvironmentABI: "generated-source-abi-v1",
-		},
-		func(*ResolvedConfig) (CompactConfigGraph, error) {
-			return CompactConfigGraph{Kbuild: kb, GeneratedHeadersLabel: "//headers:test"}, nil
-		},
-	)
+	}, "riscv", nil)
 	if err == nil {
 		t.Fatalf("CompactMetadataBatchWithOptions() succeeded, want an unimplemented-generator error")
 	}
@@ -465,30 +456,10 @@ targets += capflags.c
 // error survives for objects no rule explains, so the two failures stay
 // distinguishable.
 func TestCompactMetadataStillReportsUnresolvableSources(t *testing.T) {
-	tree := mustParseString(t, "mainmenu \"missing\"\n")
-	root := t.TempDir()
-	mustWriteSource(t, root, "Makefile", "obj-y += drivers/thing/\n")
-	mustWriteSource(t, root, "drivers/thing/Makefile", "obj-y += widget.o\n")
-	writeCompactContentGraphForcedInputs(t, root)
-	if err := os.MkdirAll(filepath.Join(root, "drivers", "thing"), 0o755); err != nil {
-		t.Fatalf("MkdirAll() failed: %v", err)
-	}
-
-	kb, err := ParseKbuildDirectoryTree(filepath.Join(root, "Makefile"), KbuildOptions{RootDir: root})
-	if err != nil {
-		t.Fatalf("ParseKbuildDirectoryTree() failed: %v", err)
-	}
-	_, err = tree.CompactMetadataBatchWithOptions(
-		[]NamedConfig{{Name: "test"}},
-		CompactMetadataOptions{
-			SourceRoot:            root,
-			Srcarch:               "x86",
-			CompileEnvironmentABI: "generated-source-abi-v1",
-		},
-		func(*ResolvedConfig) (CompactConfigGraph, error) {
-			return CompactConfigGraph{Kbuild: kb, GeneratedHeadersLabel: "//headers:test"}, nil
-		},
-	)
+	_, _, err := generatedSourceMetadataResult(t, "mainmenu \"missing\"\n", map[string]string{
+		"Makefile":               "obj-y += drivers/thing/\n",
+		"drivers/thing/Makefile": "obj-y += widget.o\n",
+	}, "x86", nil)
 	if err == nil {
 		t.Fatalf("CompactMetadataBatchWithOptions() succeeded, want an unresolved-source error")
 	}

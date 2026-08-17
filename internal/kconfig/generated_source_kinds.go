@@ -8,26 +8,14 @@ import (
 
 // The generator registry.
 //
-// Rule *discovery* is generic: kbuild_generated_source.go derives which rule
-// produces a leaf object's source from the parsed Makefile. Rule *execution*
-// cannot be, and this file is where that is admitted.
+// kbuild_generated_source.go derives which rule produces an object's source.
+// Execution cannot be derived: the only interpreter available to an action is
+// Perl, everything else is a Go port under internal/cmd/. So a rule can be
+// described precisely and still have no way to run, and a miss fails naming
+// the Makefile line.
 //
-// No action in this project has an awk, shell, sed or coreutils toolchain. The
-// only interpreter available is Perl. Everything else is a Go program under
-// internal/cmd/ reimplementing a kernel generator. So a newly discovered rule
-// can be described precisely and still have no way to run, and the honest
-// outcome is a failure that names the Makefile line rather than a guess.
-//
-// The registry is keyed on the canonicalised *command text*, never on the
-// command's name. 6.12 spells the same generator "cmd_perlasm" on x86 and
-// "cmd_perl" on arm; 6.18 moves both to lib/crypto and adds
-// "cmd_perlasm_with_args". The text is what actually determines behaviour, it
-// is derived from the Makefile rather than transcribed from it, and it is
-// shared across kernel versions and architectures.
-//
-// This is still a hardcoded table. It is a better-shaped one: keyed on
-// something derived, failing loudly on a miss, and naming the two files to
-// edit when it does.
+// Keyed on canonicalised command text, never on the command's name: 6.12
+// spells the same generator "cmd_perlasm" on x86 and "cmd_perl" on arm.
 
 // GeneratedSourceKind names an executor this project can actually run.
 type GeneratedSourceKind string
@@ -49,12 +37,9 @@ const (
 	GeneratedSourceRaid6Mktables GeneratedSourceKind = "raid6_mktables"
 )
 
-// generatedSourceKindSpec describes one executable generator.
-//
-// Every field is declared rather than inferred. Which prerequisite is the
-// nominal source, which ones the executor actually opens, and which ones only
-// need to be digest-covered are all properties of the executor, and guessing
-// any of them produces either a sandbox failure or a stale-cache bug.
+// generatedSourceKindSpec describes one executable generator. Every field is
+// declared rather than inferred: guessing which prerequisite the executor
+// opens produces either a sandbox failure or a stale-cache bug.
 type generatedSourceKindSpec struct {
 	kind GeneratedSourceKind
 	// canonical is the canonicalised command text this kind recognises.
@@ -66,6 +51,9 @@ type generatedSourceKindSpec struct {
 	// actionInputs are prerequisites the executor opens at run time and that
 	// therefore must be declared as action inputs. Nil means just the primary.
 	actionInputs func(KbuildGeneratedSource) []string
+	// noActionInputs declares that the executor opens nothing, rather than
+	// leaving the "just the primary" default to apply.
+	noActionInputs bool
 	// digestOnlyInputs are files whose contents must invalidate the object but
 	// which the action never reads, because a Go port stands in for them.
 	digestOnlyInputs func(KbuildGeneratedSource) []string
@@ -74,13 +62,10 @@ type generatedSourceKindSpec struct {
 	// closureInputs are files scanned for includes on the generated file's
 	// behalf. They are needed when the nominal source's own include lines do
 	// not describe the generated output.
-	closureInputs func(KbuildGeneratedSource) []string
+	closureInputs []string
 	// skipPrimaryScan suppresses scanning the nominal source for includes.
-	//
-	// The header closure is normally taken from the nominal source, which
-	// works because every other generator's input either has no include lines
-	// at all (".pl", ".sh", ".uni") or has exactly the generated file's
-	// (".uc"). A host C program has neither: its includes are the host's.
+	// Needed only for a host C program, whose includes are the host's; every
+	// other input has no include lines or exactly the generated file's.
 	skipPrimaryScan bool
 }
 
@@ -137,12 +122,9 @@ var generatedSourceKinds = []generatedSourceKindSpec{
 	{
 		kind:      GeneratedSourceRaid6Mktables,
 		canonical: "HOSTPROG(mktables) > $@",
-		// The generator reads no input at all: it writes tables.c from
-		// compiled-in Galois-field arithmetic. The hostprog's own source is
-		// therefore both the only thing that can change the output and the
-		// only checked-in file that can stand for the object, so it is the
-		// nominal source. It stays out of ActionInputs because the Go port
-		// replaces it and the action never opens it.
+		// The generator reads nothing: it writes tables.c from compiled-in
+		// arithmetic. So the hostprog's own source is the only file that can
+		// change the output, and the only one that can stand for the object.
 		primary: func(gs KbuildGeneratedSource) string {
 			sources := generatedSourceHostprogSources(gs)
 			if len(sources) == 0 {
@@ -150,20 +132,14 @@ var generatedSourceKinds = []generatedSourceKindSpec{
 			}
 			return sources[0]
 		},
-		// The action opens nothing, so this overrides the "just the primary"
-		// default rather than leaving it to be inferred.
-		actionInputs: func(KbuildGeneratedSource) []string { return nil },
+		noActionInputs: true,
 		digestOnlyInputs: func(gs KbuildGeneratedSource) []string {
 			return generatedSourceHostprogSources(gs)
 		},
-		// mktables.c is a host program: it includes <stdio.h> and friends,
-		// which do not resolve inside the kernel tree, while the tables.c it
-		// prints includes only these two. Scanning the host program instead
-		// would fail outright.
+		// mktables.c includes <stdio.h> and friends, which do not resolve in
+		// the kernel tree; the tables.c it prints includes only these two.
 		skipPrimaryScan: true,
-		closureInputs: func(KbuildGeneratedSource) []string {
-			return []string{"include/linux/export.h", "include/linux/raid/pq.h"}
-		},
+		closureInputs:   []string{"include/linux/export.h", "include/linux/raid/pq.h"},
 	},
 }
 
@@ -171,6 +147,10 @@ var generatedSourceKinds = []generatedSourceKindSpec{
 // inputs and arguments the action needs.
 type GeneratedSourceExecutor struct {
 	Kind GeneratedSourceKind
+	// Target is the source-relative path of the generated file, for example
+	// "lib/raid6/int1.c". It is the path whose extension decides how the
+	// object is compiled.
+	Target string
 	// Primary is the nominal source recorded for the object. It always names a
 	// real checked-in file, never the generated target, because several
 	// invariants require the object's source to exist in the tree and be part
@@ -189,13 +169,9 @@ type GeneratedSourceExecutor struct {
 	Args []string
 }
 
-// GeneratedSourceExecutorFor classifies a resolved rule into an executor.
-//
-// It fails rather than guessing. The error names the object, the resolved
-// target, the rule position, the command name, the canonical command text and
-// the two files that need editing, because that is the whole point of deriving
-// dispatch from rules: an unsupported generator becomes an actionable report
-// instead of a silent wrong answer.
+// GeneratedSourceExecutorFor classifies a resolved rule into an executor. It
+// fails rather than guessing; the error names the object, the rule position,
+// the canonical command text and the files that need editing.
 func GeneratedSourceExecutorFor(object string, gs KbuildGeneratedSource) (GeneratedSourceExecutor, error) {
 	canonical, err := canonicalGeneratedSourceCommand(gs)
 	if err != nil {
@@ -206,15 +182,19 @@ func GeneratedSourceExecutorFor(object string, gs KbuildGeneratedSource) (Genera
 			continue
 		}
 		executor := GeneratedSourceExecutor{
-			Kind:    spec.kind,
-			Primary: gs.Primary,
+			Kind:          spec.kind,
+			Target:        gs.Target,
+			Primary:       gs.Primary,
+			ClosureInputs: spec.closureInputs,
 		}
 		if spec.primary != nil {
 			executor.Primary = spec.primary(gs)
 		}
-		if spec.actionInputs != nil {
+		switch {
+		case spec.actionInputs != nil:
 			executor.ActionInputs = spec.actionInputs(gs)
-		} else if executor.Primary != "" {
+		case spec.noActionInputs:
+		case executor.Primary != "":
 			executor.ActionInputs = []string{executor.Primary}
 		}
 		if spec.digestOnlyInputs != nil {
@@ -222,9 +202,6 @@ func GeneratedSourceExecutorFor(object string, gs KbuildGeneratedSource) (Genera
 		}
 		if spec.args != nil {
 			executor.Args = spec.args(gs)
-		}
-		if spec.closureInputs != nil {
-			executor.ClosureInputs = spec.closureInputs(gs)
 		}
 		executor.SkipPrimaryScan = spec.skipPrimaryScan
 		if executor.Primary == "" {

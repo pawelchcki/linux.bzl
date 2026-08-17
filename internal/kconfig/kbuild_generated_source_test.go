@@ -1,24 +1,17 @@
 package kconfig
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
 
-func generatedSourceForTest(t *testing.T, directory string, files map[string]string, object string) (KbuildGeneratedSource, bool, error) {
+func generatedSourceForTest(t *testing.T, files map[string]string, object string) (KbuildGeneratedSource, bool, error) {
 	t.Helper()
 	root := t.TempDir()
 	for name, contents := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%q) failed: %v", filepath.Dir(full), err)
-		}
-		if err := os.WriteFile(full, []byte(contents), 0o644); err != nil {
-			t.Fatalf("WriteFile(%q) failed: %v", full, err)
-		}
+		mustWriteSource(t, root, name, contents)
 	}
 	kb, err := ParseKbuildDirectoryTree(filepath.Join(root, "Makefile"), KbuildOptions{RootDir: root})
 	if err != nil {
@@ -39,7 +32,7 @@ func rootMakefileDescending(dirs ...string) string {
 
 func TestGeneratedSourceForObjectX86CryptoPerlasm(t *testing.T) {
 	// arch/x86/crypto/Makefile in 6.12.96, verbatim shape.
-	got, ok, err := generatedSourceForTest(t, "", map[string]string{
+	got, ok, err := generatedSourceForTest(t, map[string]string{
 		"Makefile": rootMakefileDescending("arch/x86/crypto"),
 		"arch/x86/crypto/Makefile": `obj-$(CONFIG_CRYPTO_POLY1305_X86_64) += poly1305-x86_64.o
 poly1305-x86_64-y := poly1305-x86_64-cryptogams.o poly1305_glue.o
@@ -135,13 +128,12 @@ $(obj)/tables.c: $(obj)/mktables FORCE
 				Prerequisites:   []string{"lib/raid6/mktables"},
 				CommandTemplate: "lib/raid6/mktables > $@",
 				CommandName:     "mktable",
-				Explicit:        true,
 				Directory:       "lib/raid6",
 			},
 		},
 	} {
 		t.Run(tc.object, func(t *testing.T) {
-			got, ok, err := generatedSourceForTest(t, "", files, tc.object)
+			got, ok, err := generatedSourceForTest(t, files, tc.object)
 			if err != nil {
 				t.Fatalf("ForObject(%q) failed: %v", tc.object, err)
 			}
@@ -190,7 +182,6 @@ $(obj)/sha256-core.S: $(src)/sha512-armv8.pl
 				Prerequisites:   []string{"arch/arm64/crypto/sha512-armv8.pl"},
 				CommandTemplate: "$(PERL) $(<) void $(@)",
 				CommandName:     "perlasm",
-				Explicit:        true,
 				Directory:       "arch/arm64/crypto",
 			},
 		},
@@ -220,7 +211,7 @@ $(obj)/sha256-core.S: $(src)/sha512-armv8.pl
 		},
 	} {
 		t.Run(tc.object, func(t *testing.T) {
-			got, ok, err := generatedSourceForTest(t, "", files, tc.object)
+			got, ok, err := generatedSourceForTest(t, files, tc.object)
 			if err != nil {
 				t.Fatalf("ForObject(%q) failed: %v", tc.object, err)
 			}
@@ -236,7 +227,7 @@ $(obj)/sha256-core.S: $(src)/sha512-armv8.pl
 // which expands to a "$(src)/../../include/..." path and therefore only
 // normalises correctly if the resolver cleans it.
 func TestGeneratedSourceForObjectCapflags(t *testing.T) {
-	got, ok, err := generatedSourceForTest(t, "", map[string]string{
+	got, ok, err := generatedSourceForTest(t, map[string]string{
 		"Makefile": rootMakefileDescending("arch/x86/kernel/cpu"),
 		"arch/x86/kernel/cpu/Makefile": `obj-y += capflags.o
 
@@ -270,7 +261,6 @@ targets += capflags.c
 		},
 		CommandTemplate: "$(CONFIG_SHELL) arch/x86/kernel/cpu/mkcapflags.sh $@ $^",
 		CommandName:     "mkcapflags",
-		Explicit:        true,
 		Directory:       "arch/x86/kernel/cpu",
 	})
 }
@@ -302,7 +292,7 @@ $(obj)/defkeymap.o:  $(obj)/defkeymap.c
 		"drivers/tty/vt/defkeymap.c_shipped": "/* shipped */\n",
 	}
 
-	got, ok, err := generatedSourceForTest(t, "", files, "drivers/tty/vt/consolemap_deftbl.o")
+	got, ok, err := generatedSourceForTest(t, files, "drivers/tty/vt/consolemap_deftbl.o")
 	if err != nil {
 		t.Fatalf("ForObject() failed: %v", err)
 	}
@@ -315,12 +305,11 @@ $(obj)/defkeymap.o:  $(obj)/defkeymap.c
 		Prerequisites:   []string{"drivers/tty/vt/cp437.uni", "drivers/tty/vt/conmakehash"},
 		CommandTemplate: "drivers/tty/vt/conmakehash $< > $@",
 		CommandName:     "conmk",
-		Explicit:        true,
 		Directory:       "drivers/tty/vt",
 	})
 
 	// The recipe-less rule must not claim defkeymap.o.
-	if _, ok, err := generatedSourceForTest(t, "", files, "drivers/tty/vt/defkeymap.o"); err != nil || ok {
+	if _, ok, err := generatedSourceForTest(t, files, "drivers/tty/vt/defkeymap.o"); err != nil || ok {
 		t.Fatalf("ForObject(defkeymap.o) = (ok=%v, err=%v), want no generated source", ok, err)
 	}
 }
@@ -329,7 +318,7 @@ $(obj)/defkeymap.o:  $(obj)/defkeymap.c
 // crypto shape parses into a bounded rule rather than a bogus prerequisite,
 // and resolves through the static pattern.
 func TestGeneratedSourceForObjectStaticPatternRule(t *testing.T) {
-	got, ok, err := generatedSourceForTest(t, "", map[string]string{
+	got, ok, err := generatedSourceForTest(t, map[string]string{
 		"Makefile": rootMakefileDescending("arch/powerpc/crypto"),
 		"arch/powerpc/crypto/Makefile": `obj-y += aesp10-ppc.o ghashp10-ppc.o
 
@@ -370,7 +359,7 @@ $(obj)/aesp10-ppc.S $(obj)/ghashp10-ppc.S: $(obj)/%.S: $(src)/%.pl FORCE
 // way, and the two must agree or an object's source depends on which path
 // happened to answer.
 func TestGeneratedSourceForObjectPrefersCSourceOverAssembly(t *testing.T) {
-	got, ok, err := generatedSourceForTest(t, "", map[string]string{
+	got, ok, err := generatedSourceForTest(t, map[string]string{
 		"Makefile": rootMakefileDescending("lib/demo"),
 		"lib/demo/Makefile": `obj-y += both.o
 
@@ -424,7 +413,7 @@ $(obj)/%.S: $(src)/%.pl FORCE
 		"arch/x86/crypto/sha256_ssse3.c": "/* c */\n",
 	}
 	for _, object := range []string{"arch/x86/crypto/aesni-intel.o", "arch/x86/crypto/sha256_ssse3.o"} {
-		if _, ok, err := generatedSourceForTest(t, "", files, object); err != nil || ok {
+		if _, ok, err := generatedSourceForTest(t, files, object); err != nil || ok {
 			t.Errorf("ForObject(%q) = (ok=%v, err=%v), want no generated source", object, ok, err)
 		}
 	}
@@ -434,7 +423,7 @@ $(obj)/%.S: $(src)/%.pl FORCE
 // an inactive conditional is never captured, so KbuildRule needs no condition
 // of its own. drivers/tty/vt's GENERATE_KEYMAP block is the real instance.
 func TestGeneratedSourceForObjectIgnoresInactiveRules(t *testing.T) {
-	_, ok, err := generatedSourceForTest(t, "", map[string]string{
+	_, ok, err := generatedSourceForTest(t, map[string]string{
 		"Makefile": rootMakefileDescending("drivers/tty/vt"),
 		"drivers/tty/vt/Makefile": `obj-y += defkeymap.o
 
@@ -455,7 +444,7 @@ endif
 // dropping it would turn a three-argument invocation into a two-argument one,
 // which is a wrong answer rather than a failure.
 func TestGeneratedSourceForObjectFailsOnErasedReference(t *testing.T) {
-	_, _, err := generatedSourceForTest(t, "", map[string]string{
+	_, _, err := generatedSourceForTest(t, map[string]string{
 		"Makefile": rootMakefileDescending("lib/crypto"),
 		"lib/crypto/Makefile": `obj-y += poly1305-core.o
 
@@ -480,7 +469,7 @@ $(obj)/poly1305-core.S: $(src)/poly1305-riscv.pl FORCE
 // TestGeneratedSourceForObjectFailsOnAmbiguousRules pins that equally good
 // pattern rules are reported rather than silently resolved one way.
 func TestGeneratedSourceForObjectFailsOnAmbiguousRules(t *testing.T) {
-	_, _, err := generatedSourceForTest(t, "", map[string]string{
+	_, _, err := generatedSourceForTest(t, map[string]string{
 		"Makefile": rootMakefileDescending("drivers/thing"),
 		"drivers/thing/Makefile": `obj-y += widget.o
 

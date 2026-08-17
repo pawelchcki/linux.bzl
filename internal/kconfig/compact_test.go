@@ -3397,7 +3397,6 @@ func TestCompactContentGraphCompositeIdentityIgnoresNonActionMetadata(t *testing
 			config,
 			"",
 			nil,
-			nil,
 			[]CompactSourceInput{{Path: "ignored.inc", Digest: strings.Repeat("f", 64)}},
 			[]string{"member_target"},
 			[]string{"ignored_dep"},
@@ -3809,7 +3808,6 @@ func TestCompactMappedGeneratedSourcesUseOutputLanguageFlags(t *testing.T) {
 				nil,
 				nil,
 				nil,
-				nil,
 				"",
 				nil,
 				"linux.bzl/compact-v6/test",
@@ -3866,7 +3864,6 @@ obj-y += init.o
 		return object.variant(
 			&ResolvedConfig{},
 			"",
-			nil,
 			nil,
 			nil,
 			nil,

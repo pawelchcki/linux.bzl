@@ -33,6 +33,7 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:         GeneratedSourcePerlStdout,
+				Target:       "arch/x86/crypto/poly1305-x86_64-cryptogams.S",
 				Primary:      "arch/x86/crypto/poly1305-x86_64-cryptogams.pl",
 				ActionInputs: []string{"arch/x86/crypto/poly1305-x86_64-cryptogams.pl"},
 			},
@@ -49,6 +50,7 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:         GeneratedSourcePerlStdout,
+				Target:       "arch/arm/crypto/poly1305-core.S",
 				Primary:      "arch/arm/crypto/poly1305-armv4.pl",
 				ActionInputs: []string{"arch/arm/crypto/poly1305-armv4.pl"},
 			},
@@ -68,6 +70,7 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:         GeneratedSourcePerlArgOut,
+				Target:       "arch/arm64/crypto/sha256-core.S",
 				Primary:      "arch/arm64/crypto/sha512-armv8.pl",
 				ActionInputs: []string{"arch/arm64/crypto/sha512-armv8.pl"},
 				Args:         []string{"void"},
@@ -86,6 +89,7 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:             GeneratedSourceRaid6Unroll,
+				Target:           "lib/raid6/int4.c",
 				Primary:          "lib/raid6/int.uc",
 				ActionInputs:     []string{"lib/raid6/int.uc"},
 				DigestOnlyInputs: []string{"lib/raid6/unroll.awk"},
@@ -111,6 +115,7 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:    GeneratedSourceMkcapflags,
+				Target:  "arch/x86/kernel/cpu/capflags.c",
 				Primary: "arch/x86/kernel/cpu/mkcapflags.sh",
 				ActionInputs: []string{
 					"arch/x86/include/asm/cpufeatures.h",
@@ -131,6 +136,7 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:             GeneratedSourceConmakehash,
+				Target:           "drivers/tty/vt/consolemap_deftbl.c",
 				Primary:          "drivers/tty/vt/cp437.uni",
 				ActionInputs:     []string{"drivers/tty/vt/cp437.uni"},
 				DigestOnlyInputs: []string{"drivers/tty/vt/conmakehash.c"},
@@ -148,6 +154,7 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:             GeneratedSourceRaid6Mktables,
+				Target:           "lib/raid6/tables.c",
 				Primary:          "lib/raid6/mktables.c",
 				DigestOnlyInputs: []string{"lib/raid6/mktables.c"},
 				// mktables.c is a host program including <stdio.h>, so its own
