@@ -2211,10 +2211,7 @@ func TestCompactContentGraphValidationRecomputesContentIDs(t *testing.T) {
 				false,
 				nil,
 				nil,
-				"",
-				"",
-				nil,
-				nil,
+				compactGeneratorIdentity{},
 			)
 			dependency.Target = sanitizeTargetName(strings.TrimSuffix(object, ".o")) + "__" + compactShortID(dependency.ContentID)
 			dependencies = append(dependencies, dependency)
@@ -2245,10 +2242,7 @@ func TestCompactContentGraphValidationRecomputesContentIDs(t *testing.T) {
 			root.Symversions,
 			root.SymversionFlags,
 			root.SymversionRemoveFlags,
-			"",
-			"",
-			nil,
-			nil,
+			compactGeneratorIdentity{},
 		)
 		root.Target = sanitizeTargetName(strings.TrimSuffix(root.Object, ".o")) + "__" + compactShortID(root.ContentID)
 		metadata.ObjectVariants[0] = root
@@ -3320,8 +3314,8 @@ func TestObjectVariantContentIDUsesFullChildIDs(t *testing.T) {
 	prefix := strings.Repeat("a", compactShortIDLength)
 	left := prefix + strings.Repeat("b", 64-compactShortIDLength)
 	right := prefix + strings.Repeat("c", 64-compactShortIDLength)
-	leftID := objectVariantContentID("composite.o", "y", "", nil, nil, "", "", nil, nil, []string{left}, "abi-v1", false, false, false, nil, false, nil, nil, "", "", nil, nil)
-	rightID := objectVariantContentID("composite.o", "y", "", nil, nil, "", "", nil, nil, []string{right}, "abi-v1", false, false, false, nil, false, nil, nil, "", "", nil, nil)
+	leftID := objectVariantContentID("composite.o", "y", "", nil, nil, "", "", nil, nil, []string{left}, "abi-v1", false, false, false, nil, false, nil, nil, compactGeneratorIdentity{})
+	rightID := objectVariantContentID("composite.o", "y", "", nil, nil, "", "", nil, nil, []string{right}, "abi-v1", false, false, false, nil, false, nil, nil, compactGeneratorIdentity{})
 	if leftID == rightID {
 		t.Fatalf("full child content IDs with a shared presentation prefix produced the same parent ID %q", leftID)
 	}
@@ -3375,10 +3369,7 @@ func TestObjectVariantContentIDPreservesCanonicalFraming(t *testing.T) {
 		false,
 		nil,
 		nil,
-		"",
-		"",
-		nil,
-		nil,
+		compactGeneratorIdentity{},
 	)
 	if got != want {
 		t.Fatalf("objectVariantContentID() = %q, want canonical hash %q", got, want)

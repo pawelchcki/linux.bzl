@@ -33,7 +33,6 @@ import (
 type GeneratedSourceKind string
 
 const (
-	GeneratedSourceKindNone GeneratedSourceKind = ""
 	// GeneratedSourcePerlStdout runs a perlasm script and captures stdout.
 	// 6.12 arch/x86/crypto and arch/arm/crypto, 6.18 lib/crypto/{arm,x86}.
 	GeneratedSourcePerlStdout GeneratedSourceKind = "perl_stdout"
@@ -62,10 +61,10 @@ type generatedSourceKindSpec struct {
 	canonical string
 	// primary picks the nominal source recorded for the object. It is not
 	// always $<: mkcapflags binds $< to cpufeatures.h, but the source that
-	// stands for the object is the script.
+	// stands for the object is the script. Nil means $<.
 	primary func(KbuildGeneratedSource) string
 	// actionInputs are prerequisites the executor opens at run time and that
-	// therefore must be declared as action inputs.
+	// therefore must be declared as action inputs. Nil means just the primary.
 	actionInputs func(KbuildGeneratedSource) []string
 	// digestOnlyInputs are files whose contents must invalidate the object but
 	// which the action never reads, because a Go port stands in for them.
@@ -95,27 +94,15 @@ var generatedSourceKinds = []generatedSourceKindSpec{
 	{
 		kind:      GeneratedSourcePerlStdout,
 		canonical: "PERL $< > $@",
-		primary:   func(gs KbuildGeneratedSource) string { return gs.Primary },
-		actionInputs: func(gs KbuildGeneratedSource) []string {
-			return []string{gs.Primary}
-		},
 	},
 	{
 		kind:      GeneratedSourcePerlArgOut,
 		canonical: "PERL $< void $@",
-		primary:   func(gs KbuildGeneratedSource) string { return gs.Primary },
-		actionInputs: func(gs KbuildGeneratedSource) []string {
-			return []string{gs.Primary}
-		},
-		args: func(KbuildGeneratedSource) []string { return []string{"void"} },
+		args:      func(KbuildGeneratedSource) []string { return []string{"void"} },
 	},
 	{
 		kind:      GeneratedSourceRaid6Unroll,
 		canonical: "AWK -v N=$* -f %[unroll] < $< > $@",
-		primary:   func(gs KbuildGeneratedSource) string { return gs.Primary },
-		actionInputs: func(gs KbuildGeneratedSource) []string {
-			return []string{gs.Primary}
-		},
 		// unroll.awk is reimplemented by internal/cmd/unroll, so the action
 		// never opens it, but a change to it changes the generated source.
 		digestOnlyInputs: func(gs KbuildGeneratedSource) []string {
@@ -140,10 +127,6 @@ var generatedSourceKinds = []generatedSourceKindSpec{
 	{
 		kind:      GeneratedSourceConmakehash,
 		canonical: "HOSTPROG(conmakehash) $< > $@",
-		primary:   func(gs KbuildGeneratedSource) string { return gs.Primary },
-		actionInputs: func(gs KbuildGeneratedSource) []string {
-			return []string{gs.Primary}
-		},
 		// conmakehash is a hostprog reimplemented in Go. Nothing currently
 		// invalidates consolemap_deftbl.o when the upstream hostprog changes;
 		// digesting its source closes that hole.
@@ -167,6 +150,9 @@ var generatedSourceKinds = []generatedSourceKindSpec{
 			}
 			return sources[0]
 		},
+		// The action opens nothing, so this overrides the "just the primary"
+		// default rather than leaving it to be inferred.
+		actionInputs: func(KbuildGeneratedSource) []string { return nil },
 		digestOnlyInputs: func(gs KbuildGeneratedSource) []string {
 			return generatedSourceHostprogSources(gs)
 		},
@@ -221,10 +207,15 @@ func GeneratedSourceExecutorFor(object string, gs KbuildGeneratedSource) (Genera
 		}
 		executor := GeneratedSourceExecutor{
 			Kind:    spec.kind,
-			Primary: spec.primary(gs),
+			Primary: gs.Primary,
+		}
+		if spec.primary != nil {
+			executor.Primary = spec.primary(gs)
 		}
 		if spec.actionInputs != nil {
 			executor.ActionInputs = spec.actionInputs(gs)
+		} else if executor.Primary != "" {
+			executor.ActionInputs = []string{executor.Primary}
 		}
 		if spec.digestOnlyInputs != nil {
 			executor.DigestOnlyInputs = spec.digestOnlyInputs(gs)
@@ -247,9 +238,12 @@ func GeneratedSourceExecutorFor(object string, gs KbuildGeneratedSource) (Genera
 }
 
 func generatedSourceKindError(object string, gs KbuildGeneratedSource, canonical string, cause error) error {
-	position := gs.Position.Filename
-	if position == "" {
-		position = gs.Directory + "/Makefile"
+	// Position.String() degrades to a bare line number when the filename is
+	// unset; the directory is the only thing that makes such a report
+	// actionable, so it is substituted in instead.
+	position := gs.Position
+	if position.Filename == "" {
+		position.Filename = gs.Directory + "/Makefile"
 	}
 	detail := ""
 	if cause != nil {
@@ -257,12 +251,12 @@ func generatedSourceKindError(object string, gs KbuildGeneratedSource, canonical
 	}
 	return fmt.Errorf(
 		"no generator is implemented for leaf object %q, whose source %q is produced by "+
-			"cmd_%s at %s:%d%s\n"+
+			"cmd_%s at %s%s\n"+
 			"  command:   %s\n"+
 			"  canonical: %s\n"+
 			"Add the kind to internal/kconfig/generated_source_kinds.go and a matching "+
 			"branch to _linux_generated_source in internal/linux_objects.bzl.",
-		object, gs.Target, gs.CommandName, position, gs.Position.Line, detail,
+		object, gs.Target, gs.CommandName, position, detail,
 		gs.CommandTemplate, canonical)
 }
 
@@ -288,7 +282,7 @@ func canonicalGeneratedSourceCommand(gs KbuildGeneratedSource) (string, error) {
 	out := make([]string, 0, len(fields))
 	out = append(out, program)
 	for _, field := range fields[1:] {
-		out = append(out, canonicalGeneratedSourceWord(field, gs))
+		out = append(out, canonicalGeneratedSourceWord(field))
 	}
 	canonical := strings.Join(out, " ")
 	for _, reference := range makeVariableRefs(canonical) {
@@ -341,7 +335,7 @@ func canonicalGeneratedSourceProgram(word string) (string, error) {
 
 // canonicalGeneratedSourceWord replaces in-tree paths with placeholders so the
 // canonical form is version- and architecture-independent.
-func canonicalGeneratedSourceWord(word string, gs KbuildGeneratedSource) string {
+func canonicalGeneratedSourceWord(word string) string {
 	if !strings.ContainsRune(word, '/') {
 		return word
 	}
@@ -359,14 +353,15 @@ func canonicalGeneratedSourceWord(word string, gs KbuildGeneratedSource) string 
 // automatic variables into the short ones. 6.12 writes "$(<)" on arm and arm64
 // but "$<" on x86 for what is otherwise the same command.
 func foldMakeAutomaticVariables(command string) string {
-	replacer := strings.NewReplacer(
-		"$(<)", "$<", "${<}", "$<",
-		"$(@)", "$@", "${@}", "$@",
-		"$(*)", "$*", "${*}", "$*",
-		"$(^)", "$^", "${^}", "$^",
-	)
-	return replacer.Replace(command)
+	return makeAutomaticVariableFolder.Replace(command)
 }
+
+var makeAutomaticVariableFolder = strings.NewReplacer(
+	"$(<)", "$<", "${<}", "$<",
+	"$(@)", "$@", "${@}", "$@",
+	"$(*)", "$*", "${*}", "$*",
+	"$(^)", "$^", "${^}", "$^",
+)
 
 // generatedSourcePrerequisitesExcept returns the non-primary prerequisites.
 func generatedSourcePrerequisitesExcept(gs KbuildGeneratedSource, exclude string) []string {

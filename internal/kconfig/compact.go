@@ -522,16 +522,12 @@ func compactConcreteRecipeID(variant CompactObjectVariant) string {
 	if variant.Symversions {
 		hasher.writeValue("symversions=true")
 	}
-	if variant.Generator != "" {
-		hasher.writeValue("generated_source=", variant.GeneratedSource)
-		hasher.writeValue("generator=", variant.Generator)
-		for _, arg := range variant.GeneratorArgs {
-			hasher.writeValue("generator_arg=", arg)
-		}
-		for _, input := range variant.GeneratorInputs {
-			hasher.writeValue("generator_input=", input)
-		}
-	}
+	compactGeneratorIdentity{
+		Source: variant.GeneratedSource,
+		Kind:   variant.Generator,
+		Args:   variant.GeneratorArgs,
+		Inputs: variant.GeneratorInputs,
+	}.write(hasher)
 	for _, flag := range variant.SymversionFlags {
 		hasher.writeValue("symversion_flag=", flag)
 	}
@@ -1700,16 +1696,21 @@ func (memo compactVariantMemo) variantForStack(
 				actionFootprint.sourceInputs,
 				generatedExecutor.DigestOnlyInputs...,
 			)
-			// Some generated files need a header closure their nominal source
-			// cannot supply, so the kind declares one instead.
-			actionFootprint.closureInputs = appendUniqueStrings(
-				actionFootprint.closureInputs,
-				generatedExecutor.ClosureInputs...,
+		}
+		// Some generated files need a header closure their nominal source cannot
+		// supply, so the kind declares one instead. It is merged into the asn1
+		// additions rather than appended separately, because every append
+		// re-indexes and re-sorts the whole slice.
+		closureAdditions := asn1HeaderClosureInputs
+		if generatedExecutor != nil && len(generatedExecutor.ClosureInputs) != 0 {
+			closureAdditions = append(
+				append([]string{}, generatedExecutor.ClosureInputs...),
+				asn1HeaderClosureInputs...,
 			)
 		}
 		actionFootprint.closureInputs = appendUniqueStrings(
 			actionFootprint.closureInputs,
-			asn1HeaderClosureInputs...,
+			closureAdditions...,
 		)
 		actionFootprint.configSymbols = appendUniqueStrings(
 			actionFootprint.configSymbols,
@@ -1759,6 +1760,10 @@ func (memo compactVariantMemo) variantForStack(
 		forceAllGeneratedHeaders = actionFootprint.fullGeneratedHeaders ||
 			len(specialSources.inputs) != 0
 		sourceRefs = appendUniqueStrings(sourceRefs, actionFootprint.configSymbols...)
+		// Collected and merged in one pass: appendUniqueSourceInputs rebuilds
+		// and re-sorts the whole slice per call, so calling it per path is
+		// quadratic in the footprint size.
+		footprintInputs := make([]CompactSourceInput, 0, len(actionFootprint.sourceInputs))
 		for _, path := range actionFootprint.sourceInputs {
 			input, err := scanner.inputForTreePath(path)
 			if err != nil {
@@ -1769,8 +1774,9 @@ func (memo compactVariantMemo) variantForStack(
 					err,
 				)
 			}
-			sourceInputs = appendUniqueSourceInputs(sourceInputs, input)
+			footprintInputs = append(footprintInputs, input)
 		}
+		sourceInputs = appendUniqueSourceInputs(sourceInputs, footprintInputs...)
 		for _, forcedSource := range forcedSources {
 			forcedClosure, err := scanner.closureForSourceConfigInputsSearchProfile(
 				forcedSource,
@@ -2656,10 +2662,12 @@ func (o resolvedKbuildObject) variant(
 		symversions,
 		symversionFlags,
 		symversionRemoveFlags,
-		generatedTarget,
-		generatorKind,
-		generatorArgs,
-		generatorInputs,
+		compactGeneratorIdentity{
+			Source: generatedTarget,
+			Kind:   generatorKind,
+			Args:   generatorArgs,
+			Inputs: generatorInputs,
+		},
 	)
 	return CompactObjectVariant{
 		Target:             sanitizeTargetName(strings.TrimSuffix(o.object, ".o")) + "__" + compactShortID(contentID),
@@ -2908,8 +2916,7 @@ func compactGeneratedSourceForObject(
 		!fileExists(filepath.Join(opts.SourceRoot, filepath.FromSlash(executor.Primary))) {
 		return nil, nil, fmt.Errorf(
 			"Kbuild rule at %s generating %q for object %q resolves its source to %q, which is not in the source tree",
-			formatRulePosition(&KbuildRule{Position: resolved.Position}),
-			resolved.Target, object, executor.Primary)
+			resolved.Position, resolved.Target, object, executor.Primary)
 	}
 	return &resolved, &executor, nil
 }

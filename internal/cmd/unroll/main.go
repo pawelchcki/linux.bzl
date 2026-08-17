@@ -60,6 +60,8 @@ func run(n int, inPath, outPath string) error {
 // unroll applies the awk filter to input, producing the generated source.
 func unroll(input string, n int) string {
 	var out strings.Builder
+	out.Grow(len(input))
+	nText := strconv.Itoa(n)
 	for _, line := range splitAwkRecords(input) {
 		// awk repeats a line n times only when it contains "$$". With n == 0
 		// such a line is dropped entirely. That is upstream behaviour and the
@@ -68,14 +70,17 @@ func unroll(input string, n int) string {
 		if strings.Contains(line, "$$") {
 			repeat = n
 		}
+		substitute := strings.ContainsRune(line, '$')
 		for i := 0; i < repeat; i++ {
 			expanded := line
-			// The substitution order is load-bearing. "$*" becomes a literal
-			// "$" last, so that the "$" it produces is not itself treated as
-			// the start of another substitution.
-			expanded = strings.ReplaceAll(expanded, "$$", strconv.Itoa(i))
-			expanded = strings.ReplaceAll(expanded, "$#", strconv.Itoa(n))
-			expanded = strings.ReplaceAll(expanded, "$*", "$")
+			if substitute {
+				// The substitution order is load-bearing. "$*" becomes a
+				// literal "$" last, so that the "$" it produces is not itself
+				// treated as the start of another substitution.
+				expanded = strings.ReplaceAll(expanded, "$$", strconv.Itoa(i))
+				expanded = strings.ReplaceAll(expanded, "$#", nText)
+				expanded = strings.ReplaceAll(expanded, "$*", "$")
+			}
 			// awk's print always appends ORS.
 			out.WriteString(expanded)
 			out.WriteByte('\n')

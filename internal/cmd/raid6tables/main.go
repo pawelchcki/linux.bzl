@@ -127,59 +127,53 @@ func writeTables(w *bufio.Writer) {
 
 	// Power-of-2 table (exponent).
 	v := uint8(1)
-	fmt.Fprintf(w, "\nconst u8 __attribute__((aligned(256)))\nraid6_gfexp[256] =\n{\n")
-	for i := 0; i < 256; i += 8 {
-		fmt.Fprintf(w, "\t")
-		for j := 0; j < 8; j++ {
-			exptbl[i+j] = v
-			fmt.Fprintf(w, "0x%02x,%c", v, separator(j))
-			v = gfmul(v, 2)
-			if v == 1 {
-				// Entry 255 is not a real entry.
-				v = 0
-			}
+	writeByteTable(w, "raid6_gfexp", func(index int) uint8 {
+		entry := v
+		exptbl[index] = entry
+		v = gfmul(v, 2)
+		if v == 1 {
+			// Entry 255 is not a real entry.
+			v = 0
 		}
-	}
-	writeExport(w, "raid6_gfexp")
+		return entry
+	})
 
 	// Log-of-2 table.
-	fmt.Fprintf(w, "\nconst u8 __attribute__((aligned(256)))\nraid6_gflog[256] =\n{\n")
-	for i := 0; i < 256; i += 8 {
-		fmt.Fprintf(w, "\t")
-		for j := 0; j < 8; j++ {
-			v = 255
-			for k := 0; k < 256; k++ {
-				if exptbl[k] == uint8(i+j) {
-					v = uint8(k)
-					break
-				}
+	writeByteTable(w, "raid6_gflog", func(index int) uint8 {
+		for k := 0; k < 256; k++ {
+			if exptbl[k] == uint8(index) {
+				return uint8(k)
 			}
-			fmt.Fprintf(w, "0x%02x,%c", v, separator(j))
 		}
-	}
-	writeExport(w, "raid6_gflog")
+		return 255
+	})
 
 	// Inverse table, x^-1 == x^254.
-	fmt.Fprintf(w, "\nconst u8 __attribute__((aligned(256)))\nraid6_gfinv[256] =\n{\n")
-	for i := 0; i < 256; i += 8 {
-		fmt.Fprintf(w, "\t")
-		for j := 0; j < 8; j++ {
-			v = gfpow(uint8(i+j), 254)
-			invtbl[i+j] = v
-			fmt.Fprintf(w, "0x%02x,%c", v, separator(j))
-		}
-	}
-	writeExport(w, "raid6_gfinv")
+	writeByteTable(w, "raid6_gfinv", func(index int) uint8 {
+		invtbl[index] = gfpow(uint8(index), 254)
+		return invtbl[index]
+	})
 
 	// inv(2^x + 1), the exponent-xor-inverse table.
-	fmt.Fprintf(w, "\nconst u8 __attribute__((aligned(256)))\nraid6_gfexi[256] =\n{\n")
+	writeByteTable(w, "raid6_gfexi", func(index int) uint8 {
+		return invtbl[exptbl[index]^1]
+	})
+}
+
+// writeByteTable emits one 256-entry table: the declaration, the values eight
+// to a line, and the export footer. Every one-dimensional table upstream
+// prints has exactly this shape and differs only in how an entry is computed,
+// which the callback supplies. Entries are produced in ascending index order,
+// which the exponent table relies on to carry its running value.
+func writeByteTable(w *bufio.Writer, symbol string, value func(index int) uint8) {
+	fmt.Fprintf(w, "\nconst u8 __attribute__((aligned(256)))\n%s[256] =\n{\n", symbol)
 	for i := 0; i < 256; i += 8 {
 		fmt.Fprintf(w, "\t")
 		for j := 0; j < 8; j++ {
-			fmt.Fprintf(w, "0x%02x,%c", invtbl[exptbl[i+j]^1], separator(j))
+			fmt.Fprintf(w, "0x%02x,%c", value(i+j), separator(j))
 		}
 	}
-	writeExport(w, "raid6_gfexi")
+	writeExport(w, symbol)
 }
 
 // separator reproduces upstream's "(k == 7) ? '\n' : ' '": eight values per

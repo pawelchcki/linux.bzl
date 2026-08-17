@@ -34,6 +34,10 @@ type KbuildFile struct {
 	// unexported: only kbuild.go knows the value, and merge copies it
 	// explicitly because merge does not carry unexported fields otherwise.
 	rootDir string
+	// generatedResolver caches the generated-source resolver, which walks
+	// every parsed rule and command to build its buckets. Configurations that
+	// share a parsed tree share the resolver rather than rebuilding it.
+	generatedResolver *KbuildGeneratedSourceResolver
 }
 
 type KbuildObject struct {
@@ -2915,33 +2919,33 @@ func splitKbuildRule(line string) (string, string, string, string, bool) {
 // "targets: target-pattern: prereq-patterns". Without this the leading pattern
 // is mistaken for a prerequisite with a colon glued to it.
 func splitKbuildStaticPattern(prerequisites string) (string, string, bool) {
-	depth := 0
-	for i := 0; i < len(prerequisites); i++ {
-		switch prerequisites[i] {
-		case '(', '{':
-			depth++
-		case ')', '}':
-			if depth > 0 {
-				depth--
-			}
-		case ':':
-			if depth != 0 {
-				continue
-			}
-			if i+1 < len(prerequisites) && prerequisites[i+1] == '=' {
-				return "", "", false
-			}
-			pattern := strings.TrimSpace(prerequisites[:i])
-			if pattern == "" {
-				return "", "", false
-			}
-			return pattern, strings.TrimSpace(prerequisites[i+1:]), true
-		}
+	i := indexTopLevelByte(prerequisites, ':')
+	if i < 0 {
+		return "", "", false
 	}
-	return "", "", false
+	if i+1 < len(prerequisites) && prerequisites[i+1] == '=' {
+		return "", "", false
+	}
+	pattern := strings.TrimSpace(prerequisites[:i])
+	if pattern == "" {
+		return "", "", false
+	}
+	return pattern, strings.TrimSpace(prerequisites[i+1:]), true
 }
 
 func splitKbuildInlineRecipe(value string) (string, string) {
+	i := indexTopLevelByte(value, ';')
+	if i < 0 {
+		return value, ""
+	}
+	return value[:i], value[i+1:]
+}
+
+// indexTopLevelByte returns the offset of the first delim that is not nested
+// inside a "$(...)" or "${...}" reference, or -1. Make's own splitting works
+// this way: a colon or semicolon inside a variable reference belongs to the
+// reference, not to the surrounding rule.
+func indexTopLevelByte(value string, delim byte) int {
 	depth := 0
 	for i := 0; i < len(value); i++ {
 		switch value[i] {
@@ -2951,13 +2955,13 @@ func splitKbuildInlineRecipe(value string) (string, string) {
 			if depth > 0 {
 				depth--
 			}
-		case ';':
+		case delim:
 			if depth == 0 {
-				return value[:i], value[i+1:]
+				return i
 			}
 		}
 	}
-	return value, ""
+	return -1
 }
 
 func splitKbuildTargetVariable(value string) (string, string, string, []string, bool) {

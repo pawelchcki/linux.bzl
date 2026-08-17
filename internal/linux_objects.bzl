@@ -739,7 +739,7 @@ def _linux_source_preinclude_flags_for_root(source_root, assembly = False):
     ]
 
 def _is_assembly_source(src):
-    return src != None and (src.basename.endswith(".S") or src.basename.endswith(".s"))
+    return src != None and _is_assembly_path(src.basename)
 
 def _is_shipped_c_source(src):
     return src != None and src.basename.endswith(".c_shipped")
@@ -816,24 +816,19 @@ def _is_assembly_path(path):
 # that the arm64 sha256-core row is wrong for 6.12, whose Makefile carries an
 # explicit rule overriding the pattern rule. Both are reasons the rule-derived
 # path replaces it rather than extending it.
+_LINUX_LEGACY_PERLASM_KINDS = {
+    "lib/crypto/arm/poly1305-core.o": "stdout",
+    "lib/crypto/arm/sha256-core.o": "stdout",
+    "lib/crypto/arm/sha512-core.o": "stdout",
+    "lib/crypto/arm64/poly1305-core.o": "arm64_with_args",
+    "lib/crypto/arm64/sha256-core.o": "arm64_with_args",
+    "lib/crypto/arm64/sha512-core.o": "arm64_with_args",
+    "lib/crypto/riscv/poly1305-core.o": "riscv64_with_args",
+    "lib/crypto/x86/poly1305-x86_64-cryptogams.o": "stdout",
+}
+
 def _linux_legacy_perlasm_kind(object):
-    if object in [
-        "lib/crypto/arm/poly1305-core.o",
-        "lib/crypto/arm/sha256-core.o",
-        "lib/crypto/arm/sha512-core.o",
-    ]:
-        return "stdout"
-    if object in [
-        "lib/crypto/arm64/poly1305-core.o",
-        "lib/crypto/arm64/sha256-core.o",
-        "lib/crypto/arm64/sha512-core.o",
-    ]:
-        return "arm64_with_args"
-    if object == "lib/crypto/riscv/poly1305-core.o":
-        return "riscv64_with_args"
-    if object == "lib/crypto/x86/poly1305-x86_64-cryptogams.o":
-        return "stdout"
-    return ""
+    return _LINUX_LEGACY_PERLASM_KINDS.get(object, "")
 
 def _linux_dtb_symbol_base(src):
     basename = src.basename
@@ -5985,11 +5980,18 @@ def _linux_generated_source(ctx):
     ]
     args = ctx.actions.args()
 
+    # Each branch only decides what to run and what it opens; the action
+    # wiring itself is identical for every kind and is written once below.
+    action_inputs = depset(inputs)
+
     if generator in ["perl_stdout", "perl_arg_out"]:
         if not inputs:
             fail("linux_object %s generator %s requires a script input" % (ctx.label, generator))
         perl_runtime = _linux_perl_runtime(ctx)
         script = inputs[0]
+        action_inputs = depset(inputs, transitive = [perl_runtime.files])
+        mnemonic = "LinuxPerlAsm"
+        message = "Generating Linux perlasm source %{label}"
         if generator == "perl_arg_out":
             # The script writes the output itself, so the flavour word and the
             # output path are ordinary arguments. Which word it is comes from
@@ -6008,41 +6010,24 @@ def _linux_generated_source(ctx):
             args.add(script)
             args.add_all(ctx.attr.generator_args)
             executable = ctx.attr._runandwrite[DefaultInfo].files_to_run
-        path_mapped_run(
-            ctx.actions,
-            executable = executable,
-            inputs = depset(inputs, transitive = [perl_runtime.files]),
-            outputs = [out],
-            arguments = [args],
-            mnemonic = "LinuxPerlAsm",
-            progress_message = "Generating Linux perlasm source %{label}",
-        )
     elif generator == "raid6_unroll":
         if not inputs:
             fail("linux_object %s generator %s requires a template input" % (ctx.label, generator))
         args.add_all(ctx.attr.generator_args)
         args.add("-in", inputs[0])
         args.add("-out", out)
-        path_mapped_run(
-            ctx.actions,
-            executable = ctx.executable._unroll,
-            inputs = [inputs[0]],
-            outputs = [out],
-            arguments = [args],
-            mnemonic = "LinuxRaid6Unroll",
-            progress_message = "Generating Linux RAID6 unrolled source %{label}",
-        )
+        executable = ctx.executable._unroll
+        action_inputs = depset([inputs[0]])
+        mnemonic = "LinuxRaid6Unroll"
+        message = "Generating Linux RAID6 unrolled source %{label}"
     elif generator == "raid6_mktables":
+        # The generator reads nothing: it writes the tables from compiled-in
+        # arithmetic, so it declares no action inputs.
         args.add("-out", out)
-        path_mapped_run(
-            ctx.actions,
-            executable = ctx.executable._raid6tables,
-            inputs = [],
-            outputs = [out],
-            arguments = [args],
-            mnemonic = "LinuxRaid6Tables",
-            progress_message = "Generating Linux RAID6 tables %{label}",
-        )
+        executable = ctx.executable._raid6tables
+        action_inputs = depset()
+        mnemonic = "LinuxRaid6Tables"
+        message = "Generating Linux RAID6 tables %{label}"
     elif generator == "mkcapflags":
         # generator_inputs is in rule order: cpufeatures.h, vmxfeatures.h and
         # the script. The script is not read by the Go port, but it stays an
@@ -6052,31 +6037,30 @@ def _linux_generated_source(ctx):
         args.add("-cpufeatures", inputs[0])
         args.add("-vmxfeatures", inputs[1])
         args.add("-out", out)
-        path_mapped_run(
-            ctx.actions,
-            executable = ctx.executable._capflags,
-            inputs = inputs,
-            outputs = [out],
-            arguments = [args],
-            mnemonic = "LinuxCapflags",
-            progress_message = "Generating Linux x86 CPU capflags %{label}",
-        )
+        executable = ctx.executable._capflags
+        mnemonic = "LinuxCapflags"
+        message = "Generating Linux x86 CPU capflags %{label}"
     elif generator == "conmakehash":
         if not inputs:
             fail("linux_object %s generator conmakehash requires a font map input" % ctx.label)
         args.add("-in", inputs[0])
         args.add("-out", out)
-        path_mapped_run(
-            ctx.actions,
-            executable = ctx.executable._conmakehash,
-            inputs = [inputs[0]],
-            outputs = [out],
-            arguments = [args],
-            mnemonic = "LinuxConsoleMap",
-            progress_message = "Generating Linux console map %{label}",
-        )
+        executable = ctx.executable._conmakehash
+        action_inputs = depset([inputs[0]])
+        mnemonic = "LinuxConsoleMap"
+        message = "Generating Linux console map %{label}"
     else:
         fail("linux_object %s uses unsupported generator %s" % (ctx.label, generator))
+
+    path_mapped_run(
+        ctx.actions,
+        executable = executable,
+        inputs = action_inputs,
+        outputs = [out],
+        arguments = [args],
+        mnemonic = mnemonic,
+        progress_message = message,
+    )
 
     return struct(src = out, files = [out], path = generated_path)
 

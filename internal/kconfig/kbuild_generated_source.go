@@ -66,14 +66,12 @@ type KbuildGeneratedSource struct {
 	// phonies removed.
 	Prerequisites []string
 	OrderOnly     []string
-	// Command is the resolved "cmd_<name>" macro body with the stem
-	// substituted, for diagnostics. Automatic variables survive expansion, so
-	// this still shows which argument is the input and which is the output.
-	Command string
-	// CommandTemplate is the same body with the stem left as "$*". Generator
-	// classification keys on this rather than on Command: the template is the
-	// same text in every kernel version and for every stem, whereas Command
-	// differs per object.
+	// CommandTemplate is the resolved "cmd_<name>" macro body with the stem
+	// left as "$*", used for generator classification and diagnostics. The
+	// template is the same text in every kernel version and for every stem,
+	// which is what makes it usable as a registry key. Automatic variables
+	// survive expansion, so it still shows which argument is the input and
+	// which is the output.
 	CommandTemplate string
 	// CommandName is the "<name>" of that macro, for diagnostics only.
 	// Generators are classified by command text, never by this name: 6.12
@@ -95,14 +93,38 @@ type KbuildGeneratedSourceResolver struct {
 	rootDir  string
 	rules    map[string][]*KbuildRule
 	commands map[string]map[string]*KbuildCommand
+	// exists memoises prerequisite existence probes. Candidate sources are
+	// retried once per compiled extension and sibling objects share a pattern
+	// rule, so the same handful of paths are otherwise stat'ed repeatedly.
+	exists map[string]bool
 }
 
-// GeneratedSourceResolver builds a resolver over the parsed tree's rules.
+// prerequisiteExists reports whether an absolute prerequisite path is present,
+// caching the answer for the resolver's lifetime.
+func (r *KbuildGeneratedSourceResolver) prerequisiteExists(absolute string) bool {
+	if present, ok := r.exists[absolute]; ok {
+		return present
+	}
+	if r.exists == nil {
+		r.exists = map[string]bool{}
+	}
+	present := fileExists(absolute)
+	r.exists[absolute] = present
+	return present
+}
+
+// GeneratedSourceResolver builds a resolver over the parsed tree's rules. The
+// result is cached on the parsed file: building it walks every rule and
+// command, and a compact run resolves many configurations against one tree.
 func (kb *KbuildFile) GeneratedSourceResolver() *KbuildGeneratedSourceResolver {
+	if kb.generatedResolver != nil {
+		return kb.generatedResolver
+	}
 	r := &KbuildGeneratedSourceResolver{
 		rootDir:  kb.rootDir,
 		rules:    map[string][]*KbuildRule{},
 		commands: map[string]map[string]*KbuildCommand{},
+		exists:   map[string]bool{},
 	}
 	for i := range kb.Rules {
 		rule := &kb.Rules[i]
@@ -130,13 +152,8 @@ func (kb *KbuildFile) GeneratedSourceResolver() *KbuildGeneratedSourceResolver {
 		}
 		byName[command.Name] = command
 	}
+	kb.generatedResolver = r
 	return r
-}
-
-// GeneratedSourceForObject resolves the generated source for a single leaf
-// object. It is a convenience wrapper for callers that resolve one object.
-func (kb *KbuildFile) GeneratedSourceForObject(object string) (KbuildGeneratedSource, bool, error) {
-	return kb.GeneratedSourceResolver().ForObject(object)
 }
 
 // ForObject resolves the rule that generates a leaf object's source.
@@ -303,7 +320,7 @@ func (r *KbuildGeneratedSourceResolver) patternPrerequisitesResolve(rule *Kbuild
 		if kbuildPhonyPrerequisites[resolved] {
 			continue
 		}
-		if !fileExists(filepath.Join(r.rootDir, filepath.FromSlash(resolved))) {
+		if !r.prerequisiteExists(filepath.Join(r.rootDir, filepath.FromSlash(resolved))) {
 			return false
 		}
 	}
@@ -328,7 +345,7 @@ func (r *KbuildGeneratedSourceResolver) buildGeneratedSource(object, target stri
 			if err != nil {
 				return nil, fmt.Errorf(
 					"Kbuild rule at %s generating %q for object %q has an unusable %s %q: %w",
-					formatRulePosition(rule), target, object, what, entry, err)
+					rule.Position.String(), target, object, what, entry, err)
 			}
 			out = append(out, resolved)
 		}
@@ -352,7 +369,7 @@ func (r *KbuildGeneratedSourceResolver) buildGeneratedSource(object, target stri
 		if kbuildPhonyPrerequisites[generated.Primary] {
 			return KbuildGeneratedSource{}, fmt.Errorf(
 				"Kbuild rule at %s generating %q for object %q binds $< to the phony prerequisite %q",
-				formatRulePosition(rule), target, object, generated.Primary)
+				rule.Position.String(), target, object, generated.Primary)
 		}
 	}
 	for _, prerequisite := range prerequisites {
@@ -374,7 +391,7 @@ func (r *KbuildGeneratedSourceResolver) buildGeneratedSource(object, target stri
 			"Kbuild rule at %s generating %q for object %q has an unrecognised recipe %q; "+
 				"only a single $(call if_changed,<name>), $(call cmd,<name>) or "+
 				"$(call if_changed_dep,<name>) line is understood",
-			formatRulePosition(rule), target, object, strings.Join(rule.Recipe, "; "))
+			rule.Position.String(), target, object, strings.Join(rule.Recipe, "; "))
 	}
 	generated.CommandName = name
 
@@ -383,7 +400,7 @@ func (r *KbuildGeneratedSourceResolver) buildGeneratedSource(object, target stri
 		return KbuildGeneratedSource{}, fmt.Errorf(
 			"Kbuild rule at %s generating %q for object %q invokes cmd_%s, "+
 				"which is not defined in that directory",
-			formatRulePosition(rule), target, object, name)
+			rule.Position.String(), target, object, name)
 	}
 	// The stem is substituted here so downstream classification sees a
 	// concrete command. cmd_unroll's "-v N=$*" is the case that needs it.
@@ -394,7 +411,6 @@ func (r *KbuildGeneratedSourceResolver) buildGeneratedSource(object, target stri
 	// unpacked, which would leak a build-machine path into every content ID
 	// derived from it.
 	generated.CommandTemplate = r.sourceRelativeCommand(command.Value)
-	generated.Command = r.sourceRelativeCommand(substituteMakeStem(command.Value, match.stem))
 
 	// Detecting a reference that expanded to nothing needs the raw text: a
 	// recognised conditional sibling makes an unknown "$(foo-y)" expand to ""
@@ -425,7 +441,7 @@ func checkKbuildCommandErasure(command *KbuildCommand, rule *KbuildRule, target,
 			return fmt.Errorf(
 				"Kbuild rule at %s generating %q for object %q invokes cmd_%s = %q, "+
 					"in which $(%s) expanded to nothing; refusing to guess the intended arguments",
-				formatRulePosition(rule), target, object, command.Name, command.Raw, reference)
+				rule.Position.String(), target, object, command.Name, command.Raw, reference)
 		}
 	}
 	return nil
@@ -549,17 +565,10 @@ func substituteMakeStem(value, stem string) string {
 	return strings.ReplaceAll(value, "$*", stem)
 }
 
-func formatRulePosition(rule *KbuildRule) string {
-	if rule.Position.Filename == "" {
-		return fmt.Sprintf("line %d", rule.Position.Line)
-	}
-	return fmt.Sprintf("%s:%d", rule.Position.Filename, rule.Position.Line)
-}
-
 func describeRulePositions(matches []ruleMatch) string {
 	out := make([]string, 0, len(matches))
 	for _, match := range matches {
-		out = append(out, formatRulePosition(match.rule))
+		out = append(out, match.rule.Position.String())
 	}
 	return strings.Join(out, " and ")
 }
