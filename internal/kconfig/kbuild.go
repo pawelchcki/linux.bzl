@@ -21,12 +21,19 @@ type KbuildFile struct {
 	Generated         []KbuildTarget         `json:"generated,omitempty"`
 	Includes          []KbuildInclude        `json:"includes,omitempty"`
 	Rules             []KbuildRule           `json:"rules,omitempty"`
+	Commands          []KbuildCommand        `json:"commands,omitempty"`
 	TargetVariables   []KbuildTargetVariable `json:"target_variables,omitempty"`
 	objectAssigns     []kbuildObjectAssignment
 	compositeMembers  []kbuildCompositeMember
 	compositeAssigns  []kbuildCompositeAssignment
 	objectSettings    []kbuildObjectSetting
 	exportedVariables map[string]string
+	// rootDir is the absolute source root the file was parsed against. Rule
+	// prerequisites arrive "$(src)"-expanded and therefore absolute, so
+	// interpreting them back into source-relative paths needs this. It stays
+	// unexported: only kbuild.go knows the value, and merge copies it
+	// explicitly because merge does not carry unexported fields otherwise.
+	rootDir string
 }
 
 type KbuildObject struct {
@@ -85,12 +92,35 @@ type KbuildInclude struct {
 }
 
 type KbuildRule struct {
-	Targets       []string `json:"targets"`
+	Targets []string `json:"targets"`
+	// TargetPattern holds the target pattern of a static pattern rule
+	// ("targets: pattern: prerequisites"). It is empty for ordinary explicit
+	// and implicit pattern rules.
+	TargetPattern string   `json:"target_pattern,omitempty"`
 	Separator     string   `json:"separator,omitempty"`
 	Prerequisites []string `json:"prerequisites,omitempty"`
 	OrderOnly     []string `json:"order_only,omitempty"`
 	Recipe        []string `json:"recipe,omitempty"`
-	Position      Position `json:"position"`
+	// Directory is the source-relative directory of the Makefile the rule was
+	// read from, assigned while merging a directory tree.
+	Directory string   `json:"directory,omitempty"`
+	Position  Position `json:"position"`
+}
+
+// KbuildCommand records a "cmd_<name>" macro definition. Kbuild recipes are
+// almost always "$(call if_changed,<name>)", so the command text is the only
+// thing that distinguishes one generator from another.
+type KbuildCommand struct {
+	Name string `json:"name"`
+	// Value is the expanded macro body. Automatic variables ($<, $@, $*)
+	// survive expansion because they have no Kbuild definition.
+	Value string `json:"value"`
+	// Raw is the unexpanded right-hand side, kept so callers can detect
+	// references that expanded to nothing and fail closed rather than
+	// silently dropping an argument.
+	Raw       string   `json:"raw,omitempty"`
+	Directory string   `json:"directory,omitempty"`
+	Position  Position `json:"position"`
 }
 
 type KbuildTargetVariable struct {
@@ -862,6 +892,40 @@ func (p *kbuildParser) parseVariableDirective(line string) (bool, error) {
 	return false, nil
 }
 
+// recordKbuildCommand captures "cmd_<name>" macros as they are assigned.
+//
+// Capturing here rather than walking p.vars at end of parse is deliberate:
+// kbuildVariable keeps only {value, recursive}, so assignment positions are
+// already gone by then, and a map walk would need explicit sorting to stay
+// deterministic. Recording per assignment also means "+=", reassignment and
+// conditionally-guarded redefinition all naturally resolve to the last active
+// definition, because a later entry overwrites an earlier one.
+func (p *kbuildParser) recordKbuildCommand(lhs, rhs string, pos Position) {
+	name, ok := strings.CutPrefix(lhs, "cmd_")
+	if !ok || name == "" {
+		return
+	}
+	raw := rhs
+	if current, found := p.lookupVariable(lhs); found {
+		raw = current.value
+	}
+	value, found, err := p.expandVariable(lhs, "$("+lhs+")", 0)
+	if err != nil || !found {
+		// An unexpandable command is not a parse error: it simply cannot be
+		// classified later, and the generated-source resolver fails closed on
+		// the surviving references.
+		value = raw
+	}
+	command := KbuildCommand{Name: name, Value: value, Raw: raw, Position: pos}
+	for i := range p.kb.Commands {
+		if p.kb.Commands[i].Name == name {
+			p.kb.Commands[i] = command
+			return
+		}
+	}
+	p.kb.Commands = append(p.kb.Commands, command)
+}
+
 func (p *kbuildParser) expandVariableDirectiveNames(value string) ([]string, error) {
 	expanded, err := p.expand(value)
 	if err != nil {
@@ -899,6 +963,7 @@ func (p *kbuildParser) parseAssignment(line string, pos Position) error {
 	if slices.Contains(modifiers, "export") {
 		p.exported[lhs] = true
 	}
+	p.recordKbuildCommand(lhs, rhs, pos)
 
 	values := kbuildFields(expandedRHS)
 	if len(values) == 0 {
@@ -1197,12 +1262,23 @@ func (p *kbuildParser) parseRule(line string, pos Position) (bool, error) {
 		return true, nil
 	}
 
+	targetPattern := ""
+	if pattern, rest, ok := splitKbuildStaticPattern(prerequisitesText); ok {
+		expandedPattern, err := p.expand(pattern)
+		if err != nil {
+			return true, err
+		}
+		targetPattern = strings.TrimSpace(expandedPattern)
+		prerequisitesText = rest
+	}
+
 	prerequisites, orderOnly, err := p.expandPrerequisites(prerequisitesText)
 	if err != nil {
 		return true, err
 	}
 	rule := KbuildRule{
 		Targets:       targets,
+		TargetPattern: targetPattern,
 		Separator:     separator,
 		Prerequisites: prerequisites,
 		OrderOnly:     orderOnly,
@@ -2388,11 +2464,18 @@ func (kb *KbuildFile) merge(other *KbuildFile) {
 	kb.Generated = append(kb.Generated, other.Generated...)
 	kb.Includes = append(kb.Includes, other.Includes...)
 	kb.Rules = append(kb.Rules, other.Rules...)
+	kb.Commands = append(kb.Commands, other.Commands...)
 	kb.TargetVariables = append(kb.TargetVariables, other.TargetVariables...)
 	kb.objectAssigns = append(kb.objectAssigns, other.objectAssigns...)
 	kb.compositeMembers = append(kb.compositeMembers, other.compositeMembers...)
 	kb.compositeAssigns = append(kb.compositeAssigns, other.compositeAssigns...)
 	kb.objectSettings = append(kb.objectSettings, other.objectSettings...)
+	// merge does not carry unexported fields implicitly; rootDir has to be
+	// copied by hand or the merged tree loses the source root that rule
+	// prerequisites are absolute against.
+	if kb.rootDir == "" {
+		kb.rootDir = other.rootDir
+	}
 }
 
 type kbuildDirectoryTreeParser struct {
@@ -2453,6 +2536,7 @@ func (p *kbuildDirectoryTreeParser) parsePath(path, objectDir string, gate Kbuil
 	p.nextTraversalScope++
 	traversal := kbuildTraversal{scope: p.nextTraversalScope, linked: linkRoots}
 	out := prefixKbuildFile(local, objectDir, gate, linkRoots, traversal)
+	out.rootDir = p.rootDir
 	sources := []struct {
 		raw       *KbuildFile
 		prefixed  *KbuildFile
@@ -2644,10 +2728,19 @@ func prefixKbuildFile(kb *KbuildFile, dir string, gate KbuildCondition, linkRoot
 		out.Generated = append(out.Generated, target)
 	}
 	for _, rule := range kb.Rules {
+		rule.Targets = slices.Clone(rule.Targets)
 		for i, target := range rule.Targets {
 			rule.Targets[i] = prefixKbuildPath(dir, target)
 		}
+		if rule.TargetPattern != "" {
+			rule.TargetPattern = prefixKbuildPath(dir, rule.TargetPattern)
+		}
+		rule.Directory = dir
 		out.Rules = append(out.Rules, rule)
+	}
+	for _, command := range kb.Commands {
+		command.Directory = dir
+		out.Commands = append(out.Commands, command)
 	}
 	for _, variable := range kb.TargetVariables {
 		for i, target := range variable.Targets {
@@ -2815,6 +2908,37 @@ func splitKbuildRule(line string) (string, string, string, string, bool) {
 	rest := line[colon+len(separator):]
 	prerequisites, recipe := splitKbuildInlineRecipe(rest)
 	return targets, separator, strings.TrimSpace(prerequisites), recipe, true
+}
+
+// splitKbuildStaticPattern splits the prerequisite text of a rule at a second
+// top-level colon, which turns the rule into a static pattern rule of the form
+// "targets: target-pattern: prereq-patterns". Without this the leading pattern
+// is mistaken for a prerequisite with a colon glued to it.
+func splitKbuildStaticPattern(prerequisites string) (string, string, bool) {
+	depth := 0
+	for i := 0; i < len(prerequisites); i++ {
+		switch prerequisites[i] {
+		case '(', '{':
+			depth++
+		case ')', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ':':
+			if depth != 0 {
+				continue
+			}
+			if i+1 < len(prerequisites) && prerequisites[i+1] == '=' {
+				return "", "", false
+			}
+			pattern := strings.TrimSpace(prerequisites[:i])
+			if pattern == "" {
+				return "", "", false
+			}
+			return pattern, strings.TrimSpace(prerequisites[i+1:]), true
+		}
+	}
+	return "", "", false
 }
 
 func splitKbuildInlineRecipe(value string) (string, string) {
@@ -3451,27 +3575,44 @@ func filterMakeWords(patterns string, words string, invert bool) string {
 }
 
 func makePatternMatch(pattern, word string) bool {
-	idx := strings.IndexByte(pattern, '%')
-	if idx < 0 {
-		return pattern == word
-	}
-	return strings.HasPrefix(word, pattern[:idx]) && strings.HasSuffix(word, pattern[idx+1:])
+	_, ok := makePatternStem(pattern, word)
+	return ok
 }
 
-func makePatsubst(pattern, replacement, word string) string {
+// makePatternStem reports whether word matches pattern and, when it does,
+// returns the text the "%" stands for (GNU make's $* for pattern rules). A
+// pattern without "%" matches literally and has an empty stem.
+//
+// The length guard matters: GNU make requires the prefix and suffix to occupy
+// disjoint parts of the word, so "a%a" does not match "a" even though the word
+// both starts and ends with "a".
+func makePatternStem(pattern, word string) (string, bool) {
 	idx := strings.IndexByte(pattern, '%')
 	if idx < 0 {
 		if pattern == word {
-			return replacement
+			return "", true
 		}
-		return word
+		return "", false
 	}
 	prefix := pattern[:idx]
 	suffix := pattern[idx+1:]
+	if len(word) < len(prefix)+len(suffix) {
+		return "", false
+	}
 	if !strings.HasPrefix(word, prefix) || !strings.HasSuffix(word, suffix) {
+		return "", false
+	}
+	return word[len(prefix) : len(word)-len(suffix)], true
+}
+
+func makePatsubst(pattern, replacement, word string) string {
+	stem, ok := makePatternStem(pattern, word)
+	if !ok {
 		return word
 	}
-	stem := strings.TrimSuffix(strings.TrimPrefix(word, prefix), suffix)
+	if !strings.ContainsRune(pattern, '%') {
+		return replacement
+	}
 	return strings.ReplaceAll(replacement, "%", stem)
 }
 
