@@ -194,6 +194,10 @@ func objectVariantContentID(
 	symversions bool,
 	symversionFlags []string,
 	symversionRemoveFlags []string,
+	generatedSource string,
+	generator string,
+	generatorArgs []string,
+	generatorInputs []string,
 ) string {
 	hasher := newCompactContentHasher(compactObjectContentDomain)
 	hasher.writeValue("object=", object)
@@ -237,6 +241,23 @@ func objectVariantContentID(
 	}
 	for _, flag := range symversionRemoveFlags {
 		hasher.writeValue("symversion_remove_flag=", flag)
+	}
+	// Written last and only when a generator is present. The hash is a byte
+	// stream of the values actually written, so an object that never acquires
+	// a generator keeps a byte-identical identity.
+	//
+	// This is also required for correctness rather than only for economy:
+	// arm64's sha256-core.o and sha512-core.o share their source, flags and
+	// arguments and differ solely in the target they generate.
+	if generator != "" {
+		hasher.writeValue("generated_source=", generatedSource)
+		hasher.writeValue("generator=", generator)
+		for _, arg := range generatorArgs {
+			hasher.writeValue("generator_arg=", arg)
+		}
+		for _, input := range generatorInputs {
+			hasher.writeValue("generator_input=", input)
+		}
 	}
 	return hasher.id()
 }
@@ -987,6 +1008,10 @@ func (metadata *CompactMetadata) validateContentIDs() error {
 			variant.Symversions,
 			variant.SymversionFlags,
 			variant.SymversionRemoveFlags,
+			variant.GeneratedSource,
+			variant.Generator,
+			variant.GeneratorArgs,
+			variant.GeneratorInputs,
 		)
 		if variant.ContentID != expected {
 			return fmt.Errorf("object target %q canonical fields hash to %s, got %s", variant.Target, expected, variant.ContentID)

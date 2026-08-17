@@ -102,6 +102,31 @@ type CompactObjectVariant struct {
 	Deps                     []string `json:"deps,omitempty"`
 	Members                  []string `json:"members,omitempty"`
 	generatedHeaderFamilyIDs []string
+	// GeneratedSource names the file a Kbuild rule produces for this object,
+	// for example "lib/raid6/int1.c". Source keeps naming a checked-in file
+	// even then: several invariants require an object's source to exist in the
+	// tree and to belong to the exact-input group.
+	//
+	// These are flattened rather than nested because the metadata validator's
+	// type vocabulary is string/string_list/int/bool/dict.
+	GeneratedSource string   `json:"generated_source,omitempty"`
+	Generator       string   `json:"generator,omitempty"`
+	GeneratorArgs   []string `json:"generator_args,omitempty"`
+	// GeneratorInputs are the generator's action inputs in rule order; entry
+	// zero is the rule's $<.
+	GeneratorInputs []string `json:"generator_inputs,omitempty"`
+}
+
+// compactCompiledSourcePath returns the path whose extension decides how the
+// object is compiled. For a generated source that is the rule's target, not
+// the checked-in input: a perlasm object's source is a ".pl" script but it
+// compiles ".S", and a raid6 object's source is a ".uc" template but it
+// compiles ".c".
+func compactCompiledSourcePath(variant CompactObjectVariant) string {
+	if variant.GeneratedSource != "" {
+		return variant.GeneratedSource
+	}
+	return variant.Source
 }
 
 // CompactActionGroup is the lazy grouping layer over concrete compact objects.
@@ -473,7 +498,7 @@ func compactSourceLanguage(source string) string {
 func compactConcreteRecipeID(variant CompactObjectVariant) string {
 	hasher := newCompactContentHasher(compactActionRecipeDomain)
 	hasher.writeValue("kind=", compactActionKind(variant))
-	hasher.writeValue("language=", compactSourceLanguage(variant.Source))
+	hasher.writeValue("language=", compactSourceLanguage(compactCompiledSourcePath(variant)))
 	hasher.writeValue("mode=", variant.Mode)
 	hasher.writeValue("modname=", variant.ModName)
 	if variant.ModuleRoot {
@@ -496,6 +521,16 @@ func compactConcreteRecipeID(variant CompactObjectVariant) string {
 	}
 	if variant.Symversions {
 		hasher.writeValue("symversions=true")
+	}
+	if variant.Generator != "" {
+		hasher.writeValue("generated_source=", variant.GeneratedSource)
+		hasher.writeValue("generator=", variant.Generator)
+		for _, arg := range variant.GeneratorArgs {
+			hasher.writeValue("generator_arg=", arg)
+		}
+		for _, input := range variant.GeneratorInputs {
+			hasher.writeValue("generator_input=", input)
+		}
 	}
 	for _, flag := range variant.SymversionFlags {
 		hasher.writeValue("symversion_flag=", flag)
@@ -706,8 +741,18 @@ func cleanKbuildDir(dir string) string {
 }
 
 func (v CompactObjectVariant) equal(other CompactObjectVariant) bool {
-	if v.Target != other.Target || v.ContentID != other.ContentID || v.CompileEnvironment != other.CompileEnvironment || v.Object != other.Object || v.Source != other.Source || v.SourceInputGroup != other.SourceInputGroup || v.Mode != other.Mode || v.ModuleRoot != other.ModuleRoot || v.ModName != other.ModName || v.ObjtoolDisabled != other.ObjtoolDisabled || v.ObjtoolForce != other.ObjtoolForce || v.Symversions != other.Symversions || len(v.sourceInputs) != len(other.sourceInputs) || len(v.Flags) != len(other.Flags) || len(v.RemoveFlags) != len(other.RemoveFlags) || len(v.ObjtoolArgs) != len(other.ObjtoolArgs) || len(v.SymversionFlags) != len(other.SymversionFlags) || len(v.SymversionRemoveFlags) != len(other.SymversionRemoveFlags) || len(v.configFragment) != len(other.configFragment) || len(v.Deps) != len(other.Deps) || len(v.Members) != len(other.Members) {
+	if v.Target != other.Target || v.ContentID != other.ContentID || v.CompileEnvironment != other.CompileEnvironment || v.Object != other.Object || v.Source != other.Source || v.SourceInputGroup != other.SourceInputGroup || v.Mode != other.Mode || v.ModuleRoot != other.ModuleRoot || v.ModName != other.ModName || v.ObjtoolDisabled != other.ObjtoolDisabled || v.ObjtoolForce != other.ObjtoolForce || v.Symversions != other.Symversions || len(v.sourceInputs) != len(other.sourceInputs) || len(v.Flags) != len(other.Flags) || len(v.RemoveFlags) != len(other.RemoveFlags) || len(v.ObjtoolArgs) != len(other.ObjtoolArgs) || len(v.SymversionFlags) != len(other.SymversionFlags) || len(v.SymversionRemoveFlags) != len(other.SymversionRemoveFlags) || len(v.configFragment) != len(other.configFragment) || len(v.Deps) != len(other.Deps) || len(v.Members) != len(other.Members) || v.GeneratedSource != other.GeneratedSource || v.Generator != other.Generator || len(v.GeneratorArgs) != len(other.GeneratorArgs) || len(v.GeneratorInputs) != len(other.GeneratorInputs) {
 		return false
+	}
+	for i := range v.GeneratorArgs {
+		if v.GeneratorArgs[i] != other.GeneratorArgs[i] {
+			return false
+		}
+	}
+	for i := range v.GeneratorInputs {
+		if v.GeneratorInputs[i] != other.GeneratorInputs[i] {
+			return false
+		}
 	}
 	for i := range v.sourceInputs {
 		if v.sourceInputs[i] != other.sourceInputs[i] {
@@ -876,6 +921,11 @@ type resolvedKbuildObjects struct {
 	byName   map[string]*resolvedKbuildObject
 	roots    []resolvedKbuildObject
 	libRoots []resolvedKbuildObject
+	// generated answers "which Kbuild rule produces this object's source" for
+	// leaf objects with no source file in the tree. It rides along here
+	// because objects is already threaded through the recursive variant walk,
+	// so no signature in variantForStack has to change.
+	generated *KbuildGeneratedSourceResolver
 }
 
 func (kb *KbuildFile) resolvedObjects(config *ResolvedConfig) resolvedKbuildObjects {
@@ -1014,7 +1064,8 @@ func (kb *KbuildFile) resolvedObjects(config *ResolvedConfig) resolvedKbuildObje
 	}
 
 	out := resolvedKbuildObjects{
-		byName: byObject,
+		byName:    byObject,
+		generated: kb.GeneratedSourceResolver(),
 	}
 	for _, name := range rootOrder {
 		if object := byObject[name]; object != nil && object.root {
@@ -1532,10 +1583,35 @@ func (memo compactVariantMemo) variantForStack(
 	if len(members) != 0 {
 		source = ""
 	}
+	// The on-disk probe stays first and the rule lookup runs only on its miss
+	// path. Consulting rules first would re-resolve objects that already
+	// resolve on disk today and churn their identities for no gain.
+	var generated *KbuildGeneratedSource
+	var generatedExecutor *GeneratedSourceExecutor
+	if len(members) == 0 && source == "" {
+		resolved, executor, err := compactGeneratedSourceForObject(objects, opts, object.object)
+		if err != nil {
+			return CompactObjectVariant{}, err
+		}
+		if resolved != nil {
+			generated = resolved
+			generatedExecutor = executor
+			source = executor.Primary
+		}
+	}
 	if len(members) == 0 && source == "" {
 		return CompactObjectVariant{}, fmt.Errorf("exact input scan cannot resolve a source for leaf object %q", name)
 	}
-	symversions := compactSymversionsEnabled(config, source)
+	// The compiled language is the generated target's when a rule produces the
+	// source. For every generator that existed before this, the two agree
+	// (".pl" and ".S" are both asm, ".sh"/".uni" and ".c" are both C), so this
+	// changes nothing for them; it is what makes raid6's ".uc" template
+	// correctly compile as C rather than falling through to no language.
+	compiledSource := source
+	if generated != nil {
+		compiledSource = generated.Target
+	}
+	symversions := compactSymversionsEnabled(config, compiledSource)
 	var symversionFlags, symversionRemoveFlags []string
 	if symversions {
 		symversionFlags = normalizeSourceRootFlags(
@@ -1613,6 +1689,24 @@ func (memo compactVariantMemo) variantForStack(
 			)
 		}
 		actionFootprint := compactObjectActionFootprintForObject(name, flags)
+		if generatedExecutor != nil {
+			// Every prerequisite the generator does not open still has to be
+			// digest-covered, or a change to it leaves the object cached.
+			// footprint.sourceInputs is the existing channel for exactly this:
+			// it records a digest without scanning the file, which matters
+			// because these are awk scripts and host C programs whose includes
+			// do not resolve inside the kernel tree.
+			actionFootprint.sourceInputs = appendUniqueStrings(
+				actionFootprint.sourceInputs,
+				generatedExecutor.DigestOnlyInputs...,
+			)
+			// Some generated files need a header closure their nominal source
+			// cannot supply, so the kind declares one instead.
+			actionFootprint.closureInputs = appendUniqueStrings(
+				actionFootprint.closureInputs,
+				generatedExecutor.ClosureInputs...,
+			)
+		}
 		actionFootprint.closureInputs = appendUniqueStrings(
 			actionFootprint.closureInputs,
 			asn1HeaderClosureInputs...,
@@ -1641,23 +1735,30 @@ func (memo compactVariantMemo) variantForStack(
 		if object.mode == "m" {
 			profile = sourceScanKernelModule
 		}
-		closure, err := scanner.closureForSourceConfigInputsSearchProfile(
-			source,
-			actionIncludeSearch,
-			config,
-			isAssemblySourcePath(source),
-			actionFootprint.providedIncludes,
-			profile,
-		)
-		if err != nil {
-			return CompactObjectVariant{}, fmt.Errorf("scan source inputs for %s: %w", name, err)
+		// The include scan reads the nominal source. That is right for every
+		// generator whose input either carries no include lines at all or
+		// carries exactly the generated file's, which covers all of them
+		// except a host C program, whose kind opts out and declares the
+		// closure explicitly.
+		if generatedExecutor == nil || !generatedExecutor.SkipPrimaryScan {
+			closure, err := scanner.closureForSourceConfigInputsSearchProfile(
+				source,
+				actionIncludeSearch,
+				config,
+				isAssemblySourcePath(source),
+				actionFootprint.providedIncludes,
+				profile,
+			)
+			if err != nil {
+				return CompactObjectVariant{}, fmt.Errorf("scan source inputs for %s: %w", name, err)
+			}
+			sourceRefs = append(sourceRefs, closure.refs...)
+			generatedIncludes = append(generatedIncludes, closure.generatedIncludes...)
+			sourceInputs = append(sourceInputs, closure.sourceInputs...)
 		}
-		sourceRefs = append(sourceRefs, closure.refs...)
-		generatedIncludes = append(generatedIncludes, closure.generatedIncludes...)
 		forceAllGeneratedHeaders = actionFootprint.fullGeneratedHeaders ||
 			len(specialSources.inputs) != 0
 		sourceRefs = appendUniqueStrings(sourceRefs, actionFootprint.configSymbols...)
-		sourceInputs = append(sourceInputs, closure.sourceInputs...)
 		for _, path := range actionFootprint.sourceInputs {
 			input, err := scanner.inputForTreePath(path)
 			if err != nil {
@@ -1831,7 +1932,7 @@ func (memo compactVariantMemo) variantForStack(
 				)
 				sourceInputs = appendUniqueSourceInputs(sourceInputs, closure.sourceInputs...)
 			}
-			effectiveLanguage := compactEffectiveSourceLanguage(source)
+			effectiveLanguage := compactEffectiveSourceLanguage(compiledSource)
 			if effectiveLanguage == "c" &&
 				(strings.HasSuffix(source, ".c") || strings.HasSuffix(source, ".c_shipped")) {
 				closure, err := scanner.closureForSourceConfigInputsSearchProfile(
@@ -1973,6 +2074,8 @@ func (memo compactVariantMemo) variantForStack(
 	variant := object.variant(
 		config,
 		source,
+		generated,
+		generatedExecutor,
 		sourceInputs,
 		members,
 		deps,
@@ -2440,6 +2543,8 @@ func isGeneratedUTSVersionForcedInput(path, object string) bool {
 func (o resolvedKbuildObject) variant(
 	config *ResolvedConfig,
 	source string,
+	generated *KbuildGeneratedSource,
+	generatedExecutor *GeneratedSourceExecutor,
 	sourceInputs []CompactSourceInput,
 	members []string,
 	deps []string,
@@ -2488,8 +2593,14 @@ func (o resolvedKbuildObject) variant(
 			fragment[ref] = "n"
 		}
 	}
-	flags := normalizeSourceRootFlags(filterResolvedKbuildFlags(o.flags, source), sourceRoot)
-	remove := normalizeSourceRootFlags(filterResolvedKbuildFlags(o.remove, source), sourceRoot)
+	// Kbuild flags are selected by the language actually compiled, which for a
+	// generated source is the rule's target rather than the checked-in input.
+	flagSource := source
+	if generated != nil {
+		flagSource = generated.Target
+	}
+	flags := normalizeSourceRootFlags(filterResolvedKbuildFlags(o.flags, flagSource), sourceRoot)
+	remove := normalizeSourceRootFlags(filterResolvedKbuildFlags(o.remove, flagSource), sourceRoot)
 	modname := o.modname
 	moduleRoot := o.root && o.mode == "m"
 	compileComposite := isArm64NvheObject(o.object)
@@ -2502,6 +2613,15 @@ func (o resolvedKbuildObject) variant(
 		if !compileComposite {
 			sourceInputs = nil
 		}
+	}
+	generatedTarget := ""
+	generatorKind := ""
+	var generatorArgs, generatorInputs []string
+	if generated != nil && generatedExecutor != nil {
+		generatedTarget = generated.Target
+		generatorKind = string(generatedExecutor.Kind)
+		generatorArgs = append([]string(nil), generatedExecutor.Args...)
+		generatorInputs = append([]string(nil), generatedExecutor.ActionInputs...)
 	}
 	contentID := ""
 	compileEnvironmentID := ""
@@ -2536,6 +2656,10 @@ func (o resolvedKbuildObject) variant(
 		symversions,
 		symversionFlags,
 		symversionRemoveFlags,
+		generatedTarget,
+		generatorKind,
+		generatorArgs,
+		generatorInputs,
 	)
 	return CompactObjectVariant{
 		Target:             sanitizeTargetName(strings.TrimSuffix(o.object, ".o")) + "__" + compactShortID(contentID),
@@ -2558,9 +2682,13 @@ func (o resolvedKbuildObject) variant(
 			[]string(nil),
 			symversionRemoveFlags...,
 		),
-		configFragment: fragment,
-		Deps:           append([]string(nil), deps...),
-		Members:        append([]string(nil), members...),
+		configFragment:  fragment,
+		Deps:            append([]string(nil), deps...),
+		Members:         append([]string(nil), members...),
+		GeneratedSource: generatedTarget,
+		Generator:       generatorKind,
+		GeneratorArgs:   generatorArgs,
+		GeneratorInputs: generatorInputs,
 		generatedHeaderFamilyIDs: append(
 			[]string(nil),
 			generatedHeaderFamilyIDs...,
@@ -2738,6 +2866,52 @@ func kbuildFlagLanguageMatchesSource(language string, source string) bool {
 	default:
 		return true
 	}
+}
+
+// compactGeneratedSourceForObject resolves a leaf object whose source is
+// produced by a Kbuild rule rather than checked in.
+//
+// It returns (nil, nil, nil) when no rule applies, leaving the caller to
+// report the usual unresolved-source error. When a rule applies but no
+// executor can run it, the error names the Makefile line, which is the whole
+// point of deriving dispatch from rules.
+func compactGeneratedSourceForObject(
+	objects resolvedKbuildObjects,
+	opts CompactMetadataOptions,
+	object string,
+) (*KbuildGeneratedSource, *GeneratedSourceExecutor, error) {
+	if objects.generated == nil {
+		return nil, nil, nil
+	}
+	// Rule targets live in the "$(obj)" namespace, which coincides with the
+	// object namespace only when the Kbuild traversal starts at the source
+	// root. Every real invocation does exactly that, so rather than guess at
+	// the offset for a configuration that does not occur, decline to resolve.
+	if opts.ObjectDir != "" {
+		return nil, nil, nil
+	}
+	resolved, ok, err := objects.generated.ForObject(object)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return nil, nil, nil
+	}
+	executor, err := GeneratedSourceExecutorFor(object, resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Source has to stay a real in-tree file: the repository rule checks that
+	// an object's source exists and belongs to the exact-input group, and
+	// there is no fallback if it does not.
+	if executor.Primary != "" && opts.SourceRoot != "" &&
+		!fileExists(filepath.Join(opts.SourceRoot, filepath.FromSlash(executor.Primary))) {
+		return nil, nil, fmt.Errorf(
+			"Kbuild rule at %s generating %q for object %q resolves its source to %q, which is not in the source tree",
+			formatRulePosition(&KbuildRule{Position: resolved.Position}),
+			resolved.Target, object, executor.Primary)
+	}
+	return &resolved, &executor, nil
 }
 
 func sourceForObject(sourceRoot, objectDir, object string, sourceRoots map[string]string) string {
@@ -2985,6 +3159,9 @@ func (m *CompactMetadata) groupedCompileFallbackReason(variant CompactObjectVari
 	if compactGroupedSpecialObjects[variant.Object] {
 		return "requires generated-object actions"
 	}
+	if variant.Generator != "" {
+		return "requires a Kbuild generated source"
+	}
 	if strings.HasSuffix(variant.Object, ".asn1.o") ||
 		strings.HasSuffix(variant.Object, ".pi.o") ||
 		strings.HasSuffix(variant.Object, ".stub.o") {
@@ -2993,7 +3170,7 @@ func (m *CompactMetadata) groupedCompileFallbackReason(variant CompactObjectVari
 	if strings.HasSuffix(variant.Source, ".c_shipped") {
 		return "requires source materialization"
 	}
-	language := compactSourceLanguage(variant.Source)
+	language := compactSourceLanguage(compactCompiledSourcePath(variant))
 	if language == "" {
 		return "has unsupported primary source"
 	}
@@ -3347,6 +3524,16 @@ func (m *CompactMetadata) objectBuildFile(opts CompactBuildFileOptions) ([]byte,
 		r.SetAttr("source_input_file", sourceFile)
 		r.SetAttr("source_input_group", variant.SourceInputGroup)
 		r.SetAttr("source_input_index", ":"+sourceInputIndexTarget)
+		if variant.Generator != "" {
+			r.SetAttr("generated_source", variant.GeneratedSource)
+			r.SetAttr("generator", variant.Generator)
+			if len(variant.GeneratorArgs) != 0 {
+				r.SetAttr("generator_args", variant.GeneratorArgs)
+			}
+			if len(variant.GeneratorInputs) != 0 {
+				r.SetAttr("generator_inputs", variant.GeneratorInputs)
+			}
+		}
 		if variant.CompileEnvironment == "" {
 			return nil, fmt.Errorf("source-backed object %q has no compile environment", variant.Object)
 		}
@@ -3431,7 +3618,7 @@ func (m *CompactMetadata) objectBuildFile(opts CompactBuildFileOptions) ([]byte,
 				r := file.AddRule("linux_object_action_group", emission.GroupedName)
 				r.SetAttr("objects", objects)
 				r.SetAttr("mode", first.Mode)
-				r.SetAttr("language", compactSourceLanguage(first.Source))
+				r.SetAttr("language", compactSourceLanguage(compactCompiledSourcePath(first)))
 				r.SetAttr("flags", first.Flags)
 				r.SetAttr("recipe_id", emission.Group.RecipeID)
 				r.SetAttr("reachability_id", reachabilityID)

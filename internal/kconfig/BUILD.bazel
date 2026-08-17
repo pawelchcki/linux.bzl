@@ -39,6 +39,7 @@ go_library(
 go_test(
     name = "kconfig_test",
     srcs = [
+        "compact_generated_source_test.go",
         "compact_test.go",
         "config_footprint_test.go",
         "config_test.go",

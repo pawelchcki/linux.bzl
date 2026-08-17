@@ -148,7 +148,12 @@ func TestGeneratedSourceExecutorForRecognisedKinds(t *testing.T) {
 			},
 			want: GeneratedSourceExecutor{
 				Kind:             GeneratedSourceRaid6Mktables,
+				Primary:          "lib/raid6/mktables.c",
 				DigestOnlyInputs: []string{"lib/raid6/mktables.c"},
+				// mktables.c is a host program including <stdio.h>, so its own
+				// include lines must not be scanned as the generated file's.
+				ClosureInputs:   []string{"include/linux/export.h", "include/linux/raid/pq.h"},
+				SkipPrimaryScan: true,
 			},
 		},
 	} {

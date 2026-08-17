@@ -72,6 +72,17 @@ type generatedSourceKindSpec struct {
 	digestOnlyInputs func(KbuildGeneratedSource) []string
 	// args are the executor arguments beyond the input and output paths.
 	args func(KbuildGeneratedSource) []string
+	// closureInputs are files scanned for includes on the generated file's
+	// behalf. They are needed when the nominal source's own include lines do
+	// not describe the generated output.
+	closureInputs func(KbuildGeneratedSource) []string
+	// skipPrimaryScan suppresses scanning the nominal source for includes.
+	//
+	// The header closure is normally taken from the nominal source, which
+	// works because every other generator's input either has no include lines
+	// at all (".pl", ".sh", ".uni") or has exactly the generated file's
+	// (".uc"). A host C program has neither: its includes are the host's.
+	skipPrimaryScan bool
 }
 
 // generatedSourceKinds is the closed set of executable generators.
@@ -143,11 +154,29 @@ var generatedSourceKinds = []generatedSourceKindSpec{
 	{
 		kind:      GeneratedSourceRaid6Mktables,
 		canonical: "HOSTPROG(mktables) > $@",
-		// The generator takes no input file at all; it writes tables.c from
-		// compiled-in knowledge.
-		primary: func(KbuildGeneratedSource) string { return "" },
+		// The generator reads no input at all: it writes tables.c from
+		// compiled-in Galois-field arithmetic. The hostprog's own source is
+		// therefore both the only thing that can change the output and the
+		// only checked-in file that can stand for the object, so it is the
+		// nominal source. It stays out of ActionInputs because the Go port
+		// replaces it and the action never opens it.
+		primary: func(gs KbuildGeneratedSource) string {
+			sources := generatedSourceHostprogSources(gs)
+			if len(sources) == 0 {
+				return ""
+			}
+			return sources[0]
+		},
 		digestOnlyInputs: func(gs KbuildGeneratedSource) []string {
 			return generatedSourceHostprogSources(gs)
+		},
+		// mktables.c is a host program: it includes <stdio.h> and friends,
+		// which do not resolve inside the kernel tree, while the tables.c it
+		// prints includes only these two. Scanning the host program instead
+		// would fail outright.
+		skipPrimaryScan: true,
+		closureInputs: func(KbuildGeneratedSource) []string {
+			return []string{"include/linux/export.h", "include/linux/raid/pq.h"}
 		},
 	},
 }
@@ -166,6 +195,10 @@ type GeneratedSourceExecutor struct {
 	// DigestOnlyInputs are files that must invalidate the object without being
 	// action inputs.
 	DigestOnlyInputs []string
+	// ClosureInputs are scanned for includes on the generated file's behalf.
+	ClosureInputs []string
+	// SkipPrimaryScan suppresses scanning Primary for includes.
+	SkipPrimaryScan bool
 	// Args are executor arguments beyond input and output.
 	Args []string
 }
@@ -199,7 +232,11 @@ func GeneratedSourceExecutorFor(object string, gs KbuildGeneratedSource) (Genera
 		if spec.args != nil {
 			executor.Args = spec.args(gs)
 		}
-		if executor.Primary == "" && spec.kind != GeneratedSourceRaid6Mktables {
+		if spec.closureInputs != nil {
+			executor.ClosureInputs = spec.closureInputs(gs)
+		}
+		executor.SkipPrimaryScan = spec.skipPrimaryScan
+		if executor.Primary == "" {
 			return GeneratedSourceExecutor{}, generatedSourceKindError(
 				object, gs, canonical,
 				fmt.Errorf("the rule has no prerequisite that can stand for the object's source"))
